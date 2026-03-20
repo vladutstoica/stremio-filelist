@@ -1,5 +1,5 @@
 name: Stremio FileList
-version: "1.6.0"
+version: "1.7.0"
 slug: stremio-filelist
 description: Stream torrents from FileList.io through Stremio
 url: https://github.com/vladutstoica/stremio-filelist
@@ -9,17 +9,12 @@ arch:
   - amd64
 startup: application
 boot: auto
-ports:
-  7777/tcp: 7777
-ports_description:
-  7777/tcp: Stremio addon HTTP server
+host_network: true
 map:
   - share:rw
 options:
   FILELIST_USER: ""
   FILELIST_PASSKEY: ""
-  LOCAL_IP: ""
 schema:
   FILELIST_USER: str?
   FILELIST_PASSKEY: str?
-  LOCAL_IP: str?
