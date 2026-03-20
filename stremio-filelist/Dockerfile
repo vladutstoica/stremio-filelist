@@ -8,8 +8,7 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && apk del python3 make g++
 
-COPY index.js helpers.js run.sh ./
+COPY index.js helpers.js ./
 
-RUN chmod a+x run.sh
-
-CMD ["./run.sh"]
+COPY run.sh /etc/services.d/stremio-filelist/run
+RUN chmod a+x /etc/services.d/stremio-filelist/run

@@ -10,4 +10,4 @@ export TORRENT_DIR=/share/stremio-filelist
 mkdir -p "$TORRENT_DIR"
 
 bashio::log.info "Starting Stremio FileList addon..."
-exec node index.js
+exec node /app/index.js
