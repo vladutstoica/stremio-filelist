@@ -1,5 +1,5 @@
 name: Stremio FileList
-version: "1.1.0"
+version: "1.2.0"
 slug: stremio-filelist
 description: Stream torrents from FileList.io through Stremio
 url: https://github.com/vladutstoica/stremio-filelist
@@ -18,5 +18,5 @@ options:
   FILELIST_USER: ""
   FILELIST_PASSKEY: ""
 schema:
-  FILELIST_USER: str
-  FILELIST_PASSKEY: password
+  FILELIST_USER: str?
+  FILELIST_PASSKEY: str?
