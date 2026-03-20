@@ -171,7 +171,19 @@ function buildStream(item, torrentId, fileIdx, episodeFileName) {
 // ---- Torrent streaming ----
 const torrentCache = new Map(); // torrentId -> Buffer
 const activeTorrents = new Map(); // infoHash -> { torrent, timeout, statsInterval, activeStreams }
-const IDLE_TIMEOUT = 5 * 60 * 1000; // 5 minutes after last stream closes
+const IS_HA = fs.existsSync("/data/options.json");
+const IDLE_TIMEOUT = IS_HA ? 60 * 1000 : 5 * 60 * 1000; // 1 min on HA, 5 min standalone
+
+// Clean up leftover downloads on startup
+try {
+  if (fs.existsSync(TORRENT_DIR)) {
+    fs.rmSync(TORRENT_DIR, { recursive: true, force: true });
+    console.log(`Cleaned up old downloads: ${TORRENT_DIR}`);
+  }
+  fs.mkdirSync(TORRENT_DIR, { recursive: true });
+} catch (e) {
+  console.error("Cleanup error:", e.message);
+}
 
 async function getTorrentBuffer(torrentId) {
   if (torrentCache.has(torrentId)) return torrentCache.get(torrentId);
