@@ -72,6 +72,32 @@ All configuration is via `.env` (or environment variables):
 5. The video is streamed over HTTP to Stremio with range request support (seeking works)
 6. When you stop watching, the torrent pauses; after 5 minutes idle, files are cleaned up
 
+## Status API
+
+The addon exposes a `/status` endpoint returning JSON with active torrent states:
+
+```bash
+curl http://localhost:7777/status
+```
+
+```json
+{
+  "torrents": [
+    {
+      "name": "Movie.2024.1080p.BluRay",
+      "state": "downloading",
+      "progress": 45.2,
+      "downloadSpeed": 35840,
+      "uploadSpeed": 512,
+      "peers": 12,
+      "activeStreams": 1
+    }
+  ]
+}
+```
+
+States: `downloading` (active stream), `paused` (stream stopped, pending cleanup), `idle`.
+
 ## Terminal output
 
 While running, you'll see live download stats:
@@ -79,6 +105,65 @@ While running, you'll see live download stats:
 ```
 [Banshee.S01.720p.WEB-DL.DD5.1.AAC2.0.H.2] Peers: 5 | Down: 43.7 MB/s | Up: 0.1 MB/s | Progress: 4.9%
 ```
+
+## Home Assistant Add-on
+
+You can run this as a Home Assistant add-on for always-on availability.
+
+### Install
+
+1. In Home Assistant, go to **Settings > Add-ons > Add-on Store**
+2. Click the three-dot menu (top right) > **Repositories**
+3. Add: `https://github.com/vladutstoica/stremio-filelist`
+4. Find **Stremio FileList** in the store and click **Install**
+5. Go to the **Configuration** tab and enter your FileList username and passkey
+6. Start the add-on
+
+The addon will be available at `http://<your-ha-ip>:7777/manifest.json` — add this URL in Stremio.
+
+### Dashboard (optional)
+
+To see torrent status on your HA dashboard, add a REST sensor to your `configuration.yaml`:
+
+```yaml
+sensor:
+  - platform: rest
+    name: Stremio FileList
+    resource: http://localhost:7777/status
+    value_template: "{{ value_json.torrents | length }}"
+    unit_of_measurement: "torrents"
+    json_attributes:
+      - torrents
+    scan_interval: 10
+```
+
+Then add a Markdown card to your dashboard:
+
+```yaml
+type: markdown
+title: Stremio FileList
+content: >
+  {% if state_attr('sensor.stremio_filelist', 'torrents') | length == 0 %}
+  No active torrents
+  {% else %}
+  {% for t in state_attr('sensor.stremio_filelist', 'torrents') %}
+  **{{ t.name | truncate(40) }}**
+  State: {{ t.state }} | Progress: {{ t.progress }}%
+  Down: {{ (t.downloadSpeed / 1024) | round(1) }} MB/s | Peers: {{ t.peers }}
+  {% endfor %}
+  {% endif %}
+```
+
+## Releases
+
+To create a new release, tag and push:
+
+```bash
+git tag v1.1.0
+git push --tags
+```
+
+GitHub Actions will create a release automatically.
 
 ## License
 

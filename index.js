@@ -319,6 +319,29 @@ app.get("/stream-video/:torrentId/:fileIdx?", async (req, res) => {
   }
 });
 
+// ---- Status endpoint ----
+app.get("/status", (req, res) => {
+  const torrents = [];
+  for (const [infoHash, entry] of activeTorrents) {
+    const t = entry.torrent;
+    let state = "downloading";
+    if (entry.activeStreams === 0 && entry.timeout) state = "paused";
+    else if (entry.activeStreams === 0) state = "idle";
+
+    torrents.push({
+      name: t.name,
+      infoHash,
+      state,
+      progress: Math.round(t.progress * 1000) / 10,
+      downloadSpeed: Math.round(t.downloadSpeed / 1024),
+      uploadSpeed: Math.round(t.uploadSpeed / 1024),
+      peers: t.numPeers,
+      activeStreams: entry.activeStreams,
+    });
+  }
+  res.json({ torrents });
+});
+
 // ---- Stremio handler ----
 builder.defineStreamHandler(async ({ type, id }) => {
   const parts = id.split(":");
