@@ -172,7 +172,7 @@ function buildStream(item, torrentId, fileIdx, episodeFileName) {
 const torrentCache = new Map(); // torrentId -> Buffer
 const activeTorrents = new Map(); // infoHash -> { torrent, timeout, statsInterval, activeStreams }
 const IS_HA = fs.existsSync("/data/options.json");
-const IDLE_TIMEOUT = IS_HA ? 60 * 1000 : 5 * 60 * 1000; // 1 min on HA, 5 min standalone
+const IDLE_TIMEOUT = 5 * 60 * 1000; // 5 minutes after last stream closes
 
 // Clean up leftover downloads on startup
 try {
