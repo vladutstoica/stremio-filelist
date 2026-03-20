@@ -1,8 +1,9 @@
 name: Stremio FileList
-version: "1.4.0"
+version: "1.5.0"
 slug: stremio-filelist
 description: Stream torrents from FileList.io through Stremio
 url: https://github.com/vladutstoica/stremio-filelist
+init: false
 arch:
   - aarch64
   - amd64

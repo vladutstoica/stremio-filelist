@@ -1,6 +1,5 @@
 #!/usr/bin/with-contenv bashio
 
-# Read configuration from HA add-on options
 export FILELIST_USER=$(bashio::config 'FILELIST_USER')
 export FILELIST_PASSKEY=$(bashio::config 'FILELIST_PASSKEY')
 export HOST=0.0.0.0
