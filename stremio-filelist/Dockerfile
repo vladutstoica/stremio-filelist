@@ -10,5 +10,5 @@ RUN npm ci --omit=dev && apk del python3 make g++
 
 COPY index.js helpers.js ./
 
-COPY run.sh /etc/services.d/stremio-filelist/run
-RUN chmod a+x /etc/services.d/stremio-filelist/run
+ENTRYPOINT []
+CMD ["node", "index.js"]

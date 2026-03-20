@@ -16,6 +16,16 @@ const {
 // Load .env file if present
 try { require("dotenv").config(); } catch (_) {}
 
+// Load Home Assistant add-on options if available
+const HA_OPTIONS_PATH = "/data/options.json";
+try {
+  if (fs.existsSync(HA_OPTIONS_PATH)) {
+    const opts = JSON.parse(fs.readFileSync(HA_OPTIONS_PATH, "utf8"));
+    if (opts.FILELIST_USER) process.env.FILELIST_USER = opts.FILELIST_USER;
+    if (opts.FILELIST_PASSKEY) process.env.FILELIST_PASSKEY = opts.FILELIST_PASSKEY;
+  }
+} catch (_) {}
+
 const app = express();
 
 app.use((req, res, next) => {
