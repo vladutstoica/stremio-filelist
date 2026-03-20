@@ -281,9 +281,12 @@ async function startTorrent(torrentBuffer) {
       // Deselect all files initially
       torrent.files.forEach((f) => f.deselect());
 
-      // Stats logging — only log when downloading
+      // Stats logging — only log when actually transferring (> 10 KB/s)
       const statsInterval = setInterval(() => {
-        if (torrent.downloadSpeed > 0 || torrent.uploadSpeed > 0) {
+        const entry = activeTorrents.get(infoHash);
+        if (!entry || entry.activeStreams === 0) return;
+
+        if (torrent.downloadSpeed > 10240 || torrent.uploadSpeed > 10240) {
           const peers = torrent.numPeers;
           const down = (torrent.downloadSpeed / 1024 / 1024).toFixed(1);
           const up = (torrent.uploadSpeed / 1024 / 1024).toFixed(1);
