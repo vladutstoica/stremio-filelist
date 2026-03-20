@@ -1,0 +1,35 @@
+name: Sync add-on sources
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - index.js
+      - helpers.js
+      - package.json
+      - package-lock.json
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Sync source files to add-on directory
+        run: |
+          cp index.js helpers.js package.json package-lock.json stremio-filelist/
+      - name: Check for changes
+        id: changes
+        run: |
+          if git diff --quiet stremio-filelist/; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Commit synced files
+        if: steps.changes.outputs.changed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add stremio-filelist/
+          git commit -m "chore: sync source files to add-on directory"
+          git push
