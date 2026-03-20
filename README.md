@@ -14,7 +14,7 @@ A local Stremio addon that streams torrents from [FileList.io](https://filelist.
 
 ## Requirements
 
-- Node.js >= 18
+- Node.js >= 22
 - A [FileList.io](https://filelist.io) account with API access (passkey)
 
 ## Setup
