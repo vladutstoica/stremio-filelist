@@ -23,6 +23,7 @@ try {
     const opts = JSON.parse(fs.readFileSync(HA_OPTIONS_PATH, "utf8"));
     if (opts.FILELIST_USER) process.env.FILELIST_USER = opts.FILELIST_USER;
     if (opts.FILELIST_PASSKEY) process.env.FILELIST_PASSKEY = opts.FILELIST_PASSKEY;
+    if (opts.API_KEY) process.env.API_KEY = opts.API_KEY;
   }
 } catch (_) {}
 
@@ -39,6 +40,7 @@ const FILELIST_PASSKEY = process.env.FILELIST_PASSKEY;
 const PORT = process.env.PORT || 7777;
 const HOST = process.env.HOST || "0.0.0.0";
 const TORRENT_DIR = process.env.TORRENT_DIR || path.join(os.tmpdir(), "stremio-filelist");
+const API_KEY = process.env.API_KEY || "";
 
 // Detect local network IP for stream URLs
 function getLocalIP() {
@@ -152,7 +154,8 @@ function buildStream(item, torrentId, fileIdx, episodeFileName) {
     title += `\nFile: ${episodeFileName}`;
   }
 
-  let url = `http://${LOCAL_IP}:${PORT}/stream-video/${torrentId}`;
+  const prefix = API_KEY ? `/${API_KEY}` : "";
+  let url = `http://${LOCAL_IP}:${PORT}${prefix}/stream-video/${torrentId}`;
   if (fileIdx !== null && fileIdx !== undefined) {
     url += `/${fileIdx}`;
   }
@@ -278,8 +281,16 @@ async function startTorrent(torrentBuffer) {
   });
 }
 
-// HTTP streaming endpoint
-app.get("/stream-video/:torrentId/:fileIdx?", async (req, res) => {
+// API key validation middleware
+function validateApiKey(req, res, next) {
+  if (!API_KEY) return next();
+  if (req.params.apiKey === API_KEY) return next();
+  res.status(403).json({ error: "Forbidden" });
+}
+
+// HTTP streaming endpoint (with optional API key prefix)
+const streamPath = API_KEY ? "/:apiKey/stream-video/:torrentId/:fileIdx?" : "/stream-video/:torrentId/:fileIdx?";
+app.get(streamPath, validateApiKey, async (req, res) => {
   const { torrentId } = req.params;
   const fileIdx = req.params.fileIdx ? parseInt(req.params.fileIdx, 10) : null;
 
@@ -342,7 +353,8 @@ app.get("/stream-video/:torrentId/:fileIdx?", async (req, res) => {
 });
 
 // ---- Status endpoint ----
-app.get("/status", (req, res) => {
+const statusPath = API_KEY ? "/:apiKey/status" : "/status";
+app.get(statusPath, validateApiKey, (req, res) => {
   const torrents = [];
   for (const [infoHash, entry] of activeTorrents) {
     const t = entry.torrent;
@@ -412,12 +424,19 @@ builder.defineStreamHandler(async ({ type, id }) => {
   return { streams };
 });
 
-app.use(getRouter(builder.getInterface()));
+const addonRouter = getRouter(builder.getInterface());
+if (API_KEY) {
+  app.use(`/${API_KEY}`, validateApiKey, addonRouter);
+} else {
+  app.use(addonRouter);
+}
 
 app.listen(PORT, HOST, () => {
+  const prefix = API_KEY ? `/${API_KEY}` : "";
   console.log(`FileList addon running on ${HOST}:${PORT}`);
-  console.log(`Install in Stremio (this PC):   http://127.0.0.1:${PORT}/manifest.json`);
-  console.log(`Install in Stremio (network):   http://${LOCAL_IP}:${PORT}/manifest.json`);
+  console.log(`Install in Stremio (this PC):   http://127.0.0.1:${PORT}${prefix}/manifest.json`);
+  console.log(`Install in Stremio (network):   http://${LOCAL_IP}:${PORT}${prefix}/manifest.json`);
+  if (API_KEY) console.log(`API key auth enabled`);
   console.log(`Downloads: ${TORRENT_DIR}`);
 });
 
