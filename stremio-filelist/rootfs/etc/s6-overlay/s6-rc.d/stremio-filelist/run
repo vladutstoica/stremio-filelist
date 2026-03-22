@@ -2,6 +2,7 @@
 
 export FILELIST_USER=$(bashio::config 'FILELIST_USER')
 export FILELIST_PASSKEY=$(bashio::config 'FILELIST_PASSKEY')
+export API_KEY=$(bashio::config 'API_KEY')
 export HOST=0.0.0.0
 export PORT=7777
 export TORRENT_DIR=/share/stremio-filelist
