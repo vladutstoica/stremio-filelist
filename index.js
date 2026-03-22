@@ -426,7 +426,7 @@ builder.defineStreamHandler(async ({ type, id }) => {
 
 const addonRouter = getRouter(builder.getInterface());
 if (API_KEY) {
-  app.use(`/${API_KEY}`, validateApiKey, addonRouter);
+  app.use(`/${API_KEY}`, addonRouter);
 } else {
   app.use(addonRouter);
 }
