@@ -24,6 +24,7 @@ try {
     if (opts.FILELIST_USER) process.env.FILELIST_USER = opts.FILELIST_USER;
     if (opts.FILELIST_PASSKEY) process.env.FILELIST_PASSKEY = opts.FILELIST_PASSKEY;
     if (opts.API_KEY) process.env.API_KEY = opts.API_KEY;
+    if (opts.BASE_URL) process.env.BASE_URL = opts.BASE_URL;
   }
 } catch (_) {}
 
@@ -41,6 +42,7 @@ const PORT = process.env.PORT || 7777;
 const HOST = process.env.HOST || "0.0.0.0";
 const TORRENT_DIR = process.env.TORRENT_DIR || path.join(os.tmpdir(), "stremio-filelist");
 const API_KEY = process.env.API_KEY || "";
+const BASE_URL = process.env.BASE_URL || ""; // e.g. https://stremio.example.com
 
 // Detect local network IP for stream URLs
 function getLocalIP() {
@@ -85,7 +87,7 @@ async function getClient() {
 
 const manifest = {
   id: "org.filelist.stremio",
-  version: "1.9.1",
+  version: "1.10.0",
   name: "FileList",
   description: "Stream torrents from FileList.io",
   types: ["movie", "series"],
@@ -155,7 +157,8 @@ function buildStream(item, torrentId, fileIdx, episodeFileName) {
   }
 
   const prefix = API_KEY ? `/${API_KEY}` : "";
-  let url = `http://${LOCAL_IP}:${PORT}${prefix}/stream-video/${torrentId}`;
+  const base = BASE_URL ? BASE_URL.replace(/\/$/, "") : `http://${LOCAL_IP}:${PORT}`;
+  let url = `${base}${prefix}/stream-video/${torrentId}`;
   if (fileIdx !== null && fileIdx !== undefined) {
     url += `/${fileIdx}`;
   }
