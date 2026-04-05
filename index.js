@@ -87,7 +87,7 @@ async function getClient() {
 
 const manifest = {
   id: "org.filelist.stremio",
-  version: "1.10.0",
+  version: "1.10.1",
   name: "FileList",
   description: "Stream torrents from FileList.io",
   types: ["movie", "series"],
@@ -441,6 +441,16 @@ app.listen(PORT, HOST, () => {
   console.log(`Install in Stremio (network):   http://${LOCAL_IP}:${PORT}${prefix}/manifest.json`);
   if (API_KEY) console.log(`API key auth enabled`);
   console.log(`Downloads: ${TORRENT_DIR}`);
+});
+
+// Prevent crash from tracker abort errors during cleanup
+process.on("uncaughtException", (err) => {
+  if (err.name === "AbortError") {
+    console.log("Tracker request aborted (expected during cleanup)");
+    return;
+  }
+  console.error("Uncaught exception:", err);
+  process.exit(1);
 });
 
 // Cleanup on exit
