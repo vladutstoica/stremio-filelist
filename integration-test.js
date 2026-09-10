@@ -21,6 +21,9 @@ class FakeRes extends Writable {
   const WebTorrent = (await import("webtorrent")).default;
   const data = crypto.randomBytes(FILE_SIZE);
 
+  // Deliberately left with alwaysChokeSeeders at its default (true): after a
+  // full pass we have announced HAVE for every piece, so without lt_donthave
+  // the seeder classifies us as a seed, chokes us, and refetch never completes.
   const seeder = new WebTorrent({ dht: false, lsd: false, tracker: false, utp: false });
   const leecher = new WebTorrent({ dht: false, lsd: false, tracker: false, utp: false });
   setCapacity(CAPACITY);
@@ -29,8 +32,10 @@ class FakeRes extends Writable {
   let evicted = 0;
   const origDrop = RingStore.prototype.drop;
   RingStore.prototype.drop = function (i) { evicted++; return origDrop.call(this, i); };
+  let puts = 0;
   const origPut = RingStore.prototype.put;
   RingStore.prototype.put = function (i, buf, cb) {
+    puts++;
     const r = origPut.call(this, i, buf, cb);
     peakBytes = Math.max(peakBytes, this.bytes);
     return r;
@@ -73,6 +78,16 @@ class FakeRes extends Writable {
       if (!body.equals(data)) fail("served bytes do not match the original file");
       if (peakBytes > CAPACITY * 1.5) fail(`peak ${peakBytes} exceeded cap ${CAPACITY}`);
       if (evicted === 0) fail("nothing was evicted - the cache never filled, test is not meaningful");
+
+      // Thrash guard. If the selected window is as large as the cache, the
+      // store evicts pieces that are still inside the window, they get
+      // refetched, and the download spins at the throttle while playback
+      // starves. That shows up here as writing the file many times over.
+      const pieces = Math.ceil(FILE_SIZE / PIECE_LENGTH);
+      console.log(`piece writes: ${puts} for ${pieces} pieces (${(puts / pieces).toFixed(2)}x)`);
+      if (puts > pieces * 1.5) {
+        fail(`refetch thrash: wrote ${puts} pieces for a ${pieces}-piece file`);
+      }
 
       // The real test: seek back into a region we evicted. RingStore.drop()
       // called torrent._markUnverified(), so WebTorrent should no longer think

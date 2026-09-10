@@ -16,11 +16,19 @@ function ringStoreOf(torrent) {
   return s instanceof RingStore ? s : null;
 }
 
+// The selected window must be meaningfully smaller than the cache it lives in.
+// If they are equal, the store hits its limit exactly when the window fills and
+// has to evict pieces that are still inside the window -- which are then
+// re-fetched, evicted again, and so on: the download pins at the throttle while
+// playback starves. This leaves roughly 45% of the budget as headroom for
+// pieces in flight and for what sits behind the read head.
+const WINDOW_FRACTION = 0.55;
+
 function windowFor(store, readAheadPct) {
-  const share = shareFor(store);
+  const budget = shareFor(store) * WINDOW_FRACTION;
   return {
-    ahead: Math.max(store.chunkLength * 2, Math.floor((share * readAheadPct) / 100)),
-    behind: Math.max(store.chunkLength, Math.floor((share * (100 - readAheadPct)) / 100)),
+    ahead: Math.max(store.chunkLength * 2, Math.floor((budget * readAheadPct) / 100)),
+    behind: Math.max(store.chunkLength, Math.floor((budget * (100 - readAheadPct)) / 100)),
   };
 }
 
@@ -98,4 +106,4 @@ async function streamWindowed(torrent, file, start, end, res, entry, opts = {}) 
   }
 }
 
-module.exports = { streamWindowed, ringStoreOf, windowFor };
+module.exports = { streamWindowed, ringStoreOf, windowFor, WINDOW_FRACTION };

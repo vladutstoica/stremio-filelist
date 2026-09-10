@@ -138,8 +138,12 @@ class RingStore {
       else if (index > this.windowTo) ahead.push(index);
       else rest.push(index);
     }
-    behind.sort((a, b) => a - b);
-    ahead.sort((a, b) => b - a);
+    behind.sort((a, b) => a - b); // furthest behind the playhead first
+    ahead.sort((a, b) => b - a); // furthest ahead of the window first
+    // If we must drop something still inside the window, drop the piece the
+    // reader will reach last. Map order is insertion order, which is *nearest*
+    // the playhead -- exactly what is about to be read.
+    rest.sort((a, b) => b - a);
 
     for (const index of behind.concat(ahead, rest)) {
       if (this.bytes <= limit) break;
@@ -161,6 +165,13 @@ class RingStore {
     if (!t || typeof t._markUnverified !== "function") return;
     try {
       if (t.bitfield && t.bitfield.get(index)) t._markUnverified(index);
+      // Tell peers we no longer hold the piece. Without this they still count
+      // it against us: once we have announced HAVE for every piece they treat
+      // us as a seed and choke us, and we can never refetch anything. The
+      // extension no-ops against peers that do not support it.
+      for (const wire of t.wires || []) {
+        if (wire.lt_donthave) wire.lt_donthave.donthave(index);
+      }
     } catch (e) {
       // A torrent torn down mid-eviction is expected; anything else is not.
       if (!t.destroyed) console.error(`RingStore: markUnverified(${index}) failed:`, e.message);

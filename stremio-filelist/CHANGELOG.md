@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.12.3
+
+Fixes playback stopping after a few minutes.
+
+Two faults, both in the streaming window added in 1.11.0:
+
+- The window being fetched was as large as the whole memory budget, so the
+  moment it filled, the cache had to throw away pieces that were still needed.
+  They were fetched again, thrown away again, and playback starved while the
+  download sat at its speed limit. The window is now sized well inside the
+  budget.
+- When the cache did have to drop something still in use, it dropped the piece
+  nearest the playhead -- the one needed next. It now drops the furthest away.
+
+Also, the add-on now tells peers when it discards a piece. Without that they
+still believe it holds the whole file, treat it as a seed, and stop sending
+data, making it impossible to fetch anything again.
+
 ## 1.12.2
 
 Fixes "No streams were found" in Stremio.
