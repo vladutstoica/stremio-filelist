@@ -6,6 +6,8 @@ on:
     paths:
       - index.js
       - helpers.js
+      - ring-store.js
+      - window-stream.js
       - package.json
       - package-lock.json
 
@@ -16,7 +18,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Sync source files to add-on directory
         run: |
-          cp index.js helpers.js package.json package-lock.json stremio-filelist/
+          cp index.js helpers.js ring-store.js window-stream.js package.json package-lock.json stremio-filelist/
       - name: Check for changes
         id: changes
         run: |
