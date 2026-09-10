@@ -247,6 +247,19 @@ describe("releaseSpecs", () => {
     );
   });
 
+  test("separates the service from a same-named audio codec", () => {
+    // Real FileList release: MA is both the service (Movies Anywhere) and part
+    // of DTS-HD MA (Master Audio).
+    const raw = "Inception.2010.2160p.MA.WEB-DL.DTS-HD.MA.5.1.DoVi.HDR.H.265-FLUX";
+    expect(releaseHeadline(raw)).toBe("Inception (2010)");
+    expect(releaseSpecs(raw)).toBe("2160p · WEB-DL · H.265 · DTS-HD MA 5.1 · HDR DV");
+  });
+
+  test("spaces channels off long codec names but not short ones", () => {
+    expect(releaseSpecs("Moana.2026.1080p.AMZN.WEB-DL.DDP5.1.H.264-KyoGo")).toContain("DDP5.1");
+    expect(releaseSpecs("Inception.2010.1080p.BluRay.DTS-HD.MA.7.1.x264-DON")).toContain("DTS-HD MA 7.1");
+  });
+
   test("returns an empty string when nothing is recognisable", () => {
     expect(releaseSpecs("")).toBe("");
     expect(releaseSpecs("some random upload")).toBe("");

@@ -38,8 +38,9 @@ const CODEC_LABELS = {
   avc: "AVC", hevc: "HEVC", av1: "AV1", xvid: "XviD",
 };
 const AUDIO_LABELS = {
-  ddp: "DDP", dd: "DD", aac: "AAC", ac3: "AC3", eac3: "EAC3",
-  dts: "DTS", truehd: "TrueHD", flac: "FLAC", opus: "Opus", atmos: "Atmos",
+  ddp: "DDP", dd: "DD", "dd+": "DD+", aac: "AAC", ac3: "AC3", eac3: "EAC3",
+  dts: "DTS", "dts-hd": "DTS-HD", "dts-hd-ma": "DTS-HD MA", "dts-x": "DTS:X",
+  truehd: "TrueHD", flac: "FLAC", opus: "Opus", atmos: "Atmos",
 };
 
 // Release names are convention, not a standard, so every one of these falls
@@ -89,7 +90,10 @@ function releaseSpecs(name) {
   let audio = primary.map((a) => AUDIO_LABELS[a.toLowerCase()] || a.toUpperCase()).join("/");
   // ptt gives 2.0 as the number 2; "AAC2" reads wrong where "AAC2.0" does not.
   if (audio && p.channels) {
-    audio += Number.isInteger(p.channels) ? `${p.channels}.0` : String(p.channels);
+    const ch = Number.isInteger(p.channels) ? `${p.channels}.0` : String(p.channels);
+    // Short codes read fine run together (DDP5.1), longer ones do not
+    // (DTS-HD MA 5.1, TrueHD 7.1).
+    audio += audio.length > 4 || audio.includes(" ") ? ` ${ch}` : ch;
   }
   if (audioList.some((a) => a.toLowerCase() === "atmos")) audio = `${audio} Atmos`.trim();
   if (audio) parts.push(audio);
