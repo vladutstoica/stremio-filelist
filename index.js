@@ -4,6 +4,8 @@ const axios = require("axios");
 const path = require("path");
 const os = require("os");
 const fs = require("fs");
+const { setCapacity, stats: cacheStats, PIN_BYTES, RingStore } = require("./ring-store");
+const { streamWindowed } = require("./window-stream");
 const {
   formatSize,
   getQualityTag,
@@ -25,6 +27,10 @@ try {
     if (opts.FILELIST_PASSKEY) process.env.FILELIST_PASSKEY = opts.FILELIST_PASSKEY;
     if (opts.API_KEY) process.env.API_KEY = opts.API_KEY;
     if (opts.BASE_URL) process.env.BASE_URL = opts.BASE_URL;
+    if (opts.CACHE_SIZE_MB) process.env.CACHE_SIZE_MB = String(opts.CACHE_SIZE_MB);
+    if (opts.READ_AHEAD_PCT) process.env.READ_AHEAD_PCT = String(opts.READ_AHEAD_PCT);
+    if (opts.DOWNLOAD_LIMIT_MBPS) process.env.DOWNLOAD_LIMIT_MBPS = String(opts.DOWNLOAD_LIMIT_MBPS);
+    if (opts.MAX_CONNS) process.env.MAX_CONNS = String(opts.MAX_CONNS);
   }
 } catch (_) {}
 
@@ -43,6 +49,14 @@ const HOST = process.env.HOST || "0.0.0.0";
 const TORRENT_DIR = process.env.TORRENT_DIR || path.join(os.tmpdir(), "stremio-filelist");
 const API_KEY = process.env.API_KEY || "";
 const BASE_URL = process.env.BASE_URL || ""; // e.g. https://stremio.example.com
+
+// Streaming window. We hold only a moving slice of the film in RAM and drop
+// the rest, so peak usage is the window size rather than the file size.
+const CACHE_SIZE_MB = Number(process.env.CACHE_SIZE_MB) || 500;
+const READ_AHEAD_PCT = Math.min(99, Math.max(50, Number(process.env.READ_AHEAD_PCT) || 95));
+const DOWNLOAD_LIMIT_MBPS = Number(process.env.DOWNLOAD_LIMIT_MBPS) || 8;
+const MAX_CONNS = Number(process.env.MAX_CONNS) || 20;
+setCapacity(CACHE_SIZE_MB * 1024 * 1024);
 
 // Detect local network IP for stream URLs
 function getLocalIP() {
@@ -79,7 +93,13 @@ async function getClient() {
       dht: false,
       lsd: false,
       peerId: makeQBPeerId(),
+      maxConns: MAX_CONNS,
     });
+    // Cap the fetch rate at a few times the video bitrate. Unthrottled, the
+    // swarm delivers 25-39 MB/s, which the Green's eMMC cannot absorb: dirty
+    // pages pile up until the kernel forces a synchronous flush that blocks
+    // every other writer, including Home Assistant's recorder.
+    wtClient.throttleDownload(DOWNLOAD_LIMIT_MBPS * 1024 * 1024);
     wtClient.on("error", (e) => console.error("WebTorrent error:", e.message));
   }
   return wtClient;
@@ -87,7 +107,7 @@ async function getClient() {
 
 const manifest = {
   id: "org.filelist.stremio",
-  version: "1.10.1",
+  version: "1.11.0",
   name: "FileList",
   description: "Stream torrents from FileList.io",
   types: ["movie", "series"],
@@ -214,7 +234,8 @@ function onStreamEnd(infoHash) {
   entry.activeStreams = Math.max(0, entry.activeStreams - 1);
 
   if (entry.activeStreams === 0) {
-    // No one is watching — deselect all files to stop downloading
+    // No one is watching. The reader's own selections are dropped when its
+    // stream is destroyed; this just catches anything that leaked.
     entry.torrent.files.forEach((f) => f.deselect());
     console.log(`Paused: ${entry.torrent.name} (no active streams)`);
 
@@ -250,16 +271,33 @@ async function startTorrent(torrentBuffer) {
   }
 
   return new Promise((resolve, reject) => {
-    client.add(torrentBuffer, { path: path.join(TORRENT_DIR, infoHash) }, (torrent) => {
+    const addOpts = {
+      path: path.join(TORRENT_DIR, infoHash),
+      // Nothing is selected until a stream asks for it. This is also what makes
+      // eviction safe: RingStore calls torrent._markUnverified() on drop, and
+      // that re-selects the piece unless the torrent started deselected --
+      // which would download and evict the same piece forever.
+      deselect: true,
+      strategy: "sequential",
+      store: RingStore,
+      storeOpts: { pinBytes: PIN_BYTES },
+      // Our store is already in RAM; WebTorrent's read cache would just hold a
+      // second copy of 20 pieces on top of our budget.
+      storeCacheSlots: 0,
+      destroyStoreOnDestroy: true,
+    };
+    client.add(torrentBuffer, addOpts, (torrent) => {
       console.log(`Torrent started: ${torrent.name} (${torrent.files.length} files)`);
-
-      // Deselect all files initially
-      torrent.files.forEach((f) => f.deselect());
 
       // Stats logging — only log when actually transferring (> 10 KB/s)
       const statsInterval = setInterval(() => {
         const entry = activeTorrents.get(infoHash);
         if (!entry || entry.activeStreams === 0) return;
+
+        // Watchdog: re-assert the piece window. Eviction is driven by piece
+        // I/O, so a lost selection would mean no downloads, no I/O, no
+        // cleanup, and a stall that never recovers on its own.
+        if (entry.reapplyWindow) entry.reapplyWindow();
 
         if (torrent.downloadSpeed > 10240 || torrent.uploadSpeed > 10240) {
           const peers = torrent.numPeers;
@@ -275,6 +313,7 @@ async function startTorrent(torrentBuffer) {
         timeout: null,
         statsInterval,
         activeStreams: 0,
+        reapplyWindow: null,
       });
 
       resolve(torrent);
@@ -309,46 +348,55 @@ app.get(streamPath, validateApiKey, async (req, res) => {
       file = torrent.files.reduce((a, b) => (a.length > b.length ? a : b));
     }
 
-    // Select this file and track the stream
-    file.select();
+    // No file.select() here: selecting the file downloads all of it. The
+    // windowed reader below selects only the slice around the playhead.
     onStreamStart(torrent.infoHash);
 
     const fileSize = file.length;
     const range = req.headers.range;
 
-    console.log(`Streaming: ${file.name} (${formatSize(fileSize)})`);
-
+    let start = 0;
+    let end = fileSize - 1;
     if (range) {
       const parts = range.replace(/bytes=/, "").split("-");
-      const start = parseInt(parts[0], 10);
-      const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
-      const chunkSize = end - start + 1;
+      start = parseInt(parts[0], 10) || 0;
+      end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+    }
+    if (start >= fileSize || end >= fileSize || start > end) {
+      res.status(416).set("Content-Range", `bytes */${fileSize}`).end();
+      onStreamEnd(torrent.infoHash);
+      return;
+    }
 
+    console.log(`Streaming: ${file.name} (${formatSize(fileSize)}) bytes ${start}-${end}`);
+
+    if (range) {
       res.writeHead(206, {
         "Content-Range": `bytes ${start}-${end}/${fileSize}`,
         "Accept-Ranges": "bytes",
-        "Content-Length": chunkSize,
+        "Content-Length": end - start + 1,
         "Content-Type": "video/mp4",
       });
-
-      const stream = file.createReadStream({ start, end });
-      stream.pipe(res);
-      stream.on("error", () => res.end());
     } else {
       res.writeHead(200, {
         "Content-Length": fileSize,
         "Content-Type": "video/mp4",
         "Accept-Ranges": "bytes",
       });
-
-      const stream = file.createReadStream();
-      stream.pipe(res);
-      stream.on("error", () => res.end());
     }
 
-    res.on("close", () => {
+    let ended = false;
+    const finish = () => {
+      if (ended) return;
+      ended = true;
       onStreamEnd(torrent.infoHash);
+    };
+    res.on("close", finish);
+
+    await streamWindowed(torrent, file, start, end, res, activeTorrents.get(torrent.infoHash), {
+      readAheadPct: READ_AHEAD_PCT,
     });
+    finish();
   } catch (e) {
     console.error("Stream error:", e.message);
     res.status(500).send("Failed to stream");
@@ -376,7 +424,15 @@ app.get(statusPath, validateApiKey, (req, res) => {
       activeStreams: entry.activeStreams,
     });
   }
-  res.json({ torrents });
+  const c = cacheStats();
+  res.json({
+    torrents,
+    cache: {
+      streams: c.stores,
+      usedMB: Math.round((c.bytes / 1048576) * 10) / 10,
+      capacityMB: Math.round(c.capacity / 1048576),
+    },
+  });
 });
 
 // ---- Stremio handler ----

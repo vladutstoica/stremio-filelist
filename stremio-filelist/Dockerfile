@@ -8,7 +8,7 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && apk del python3 make g++
 
-COPY index.js helpers.js ./
+COPY index.js helpers.js ring-store.js window-stream.js ./
 
 COPY rootfs /
 RUN chmod a+x /etc/s6-overlay/s6-rc.d/stremio-filelist/run \

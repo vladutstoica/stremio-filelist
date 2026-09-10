@@ -61,7 +61,11 @@ All configuration is via `.env` (or environment variables):
 | `PORT` | No | `7777` | Server port |
 | `HOST` | No | `0.0.0.0` | Bind address |
 | `LOCAL_IP` | No | auto-detected | IP used in stream URLs |
-| `TORRENT_DIR` | No | OS temp dir | Where torrents download to |
+| `TORRENT_DIR` | No | OS temp dir | Scratch path (nothing is written there by default) |
+| `CACHE_SIZE_MB` | No | `500` | Total RAM held across all active streams |
+| `READ_AHEAD_PCT` | No | `95` | Share of the window kept ahead of the playhead; the rest is kept behind for short rewinds |
+| `DOWNLOAD_LIMIT_MBPS` | No | `8` | Fetch rate cap, in MB/s |
+| `MAX_CONNS` | No | `20` | Max peer connections |
 
 ## Option 2: Home Assistant Add-on
 
@@ -89,11 +93,21 @@ This works from any device on your local WiFi (phone, smart TV, laptop, etc.).
 
 ### Storage
 
-The add-on uses host networking and stores downloads in `/share/stremio-filelist/`. Storage is managed automatically:
+The add-on uses host networking and **streams from RAM — nothing is written to disk**.
 
-- Downloads are cleaned up 5 minutes after you stop watching
-- All leftover downloads are wiped on add-on startup
-- Files are deselected immediately when you stop watching to pause the download
+Rather than downloading the whole film, it keeps a moving window of roughly
+`CACHE_SIZE_MB` around the point you're watching and drops the rest as you go.
+That means:
+
+- **Film size doesn't matter.** A 4K remux larger than your free space plays fine, because peak usage is the window, not the file.
+- **Nothing touches the eMMC**, so Home Assistant never stalls behind a slow flush, and the soldered storage doesn't wear out.
+- **Several people can watch different films at once.** The budget is shared, so each stream gets `CACHE_SIZE_MB / streams`.
+
+The one trade-off: skipping backwards further than the retained window pauses
+for a moment while those pieces are fetched again.
+
+Leftover files from older versions are wiped from `/share/stremio-filelist/` on
+startup.
 
 ### Dashboard (optional)
 
@@ -134,8 +148,8 @@ content: >
 2. The addon searches FileList's API for matching torrents
 3. For season packs, it downloads the `.torrent` file to identify which file matches the requested episode
 4. When you click play, the addon starts a local torrent engine (WebTorrent with qBittorrent-compatible peer ID for FileList's client whitelist)
-5. The video is streamed over HTTP to Stremio with range request support (seeking works)
-6. When you stop watching, the torrent pauses; after 5 minutes idle, files are cleaned up
+5. The video is streamed over HTTP to Stremio with range request support (seeking works). Only the pieces around the playhead are ever requested — the window slides forward as you watch, and pieces you've passed are dropped from memory
+6. When you stop watching, the torrent pauses; after 5 minutes idle, it is removed entirely
 
 ## Status API
 
