@@ -8,6 +8,7 @@ const { setCapacity, stats: cacheStats, PIN_BYTES, RingStore } = require("./ring
 const { streamWindowed } = require("./window-stream");
 const {
   formatSize,
+  qualityBadge,
   compareReleases,
   releaseFlags,
   releaseHeadline,
@@ -172,7 +173,7 @@ async function searchFileList(imdbId, categories) {
 
 function buildStream(item, torrentId, fileIdx, episodeFileName) {
   const raw = item.name || "";
-  const quality = getQualityTag(raw);
+  const quality = qualityBadge(raw);
   const size = formatSize(item.size);
   const seeders = item.seeders || 0;
   const isPack = fileIdx !== null && fileIdx !== undefined;

@@ -1,4 +1,5 @@
 const {
+  qualityBadge,
   compareReleases,
   releaseFlags,
   releaseHeadline,
@@ -354,5 +355,24 @@ describe("compareReleases", () => {
     ];
     list.sort(compareReleases);
     expect(list.map((r) => r.name.slice(-1))).toEqual(["C", "B", "E", "A", "D"]);
+  });
+});
+
+describe("qualityBadge", () => {
+  test("does not call a 1080p encode of a UHD source 4K", () => {
+    // getQualityTag substring-matches "UHD" anywhere in the name, which made
+    // the badge contradict the specs line right below it.
+    expect(qualityBadge("Inception.2010.1080p.UHD.BluRay.x265.HDR.DV.DDP5.1-HiDt")).toBe("1080p");
+  });
+
+  test("badges by the parsed resolution", () => {
+    expect(qualityBadge("Inception.2010.2160p.MA.WEB-DL.H.265-FLUX")).toBe("4K");
+    expect(qualityBadge("Inception.2010.720p.BluRay.x264-LolHD")).toBe("720p");
+    expect(qualityBadge("Insula.Iubirii.S06.1080i.HDTV.MPA2.0.H.264-playTV")).toBe("1080p");
+  });
+
+  test("falls back to the coarse tag when there is no resolution token", () => {
+    expect(qualityBadge("Inception.2010.BDRip.x264.DD5.1-playSD")).toBe("SD");
+    expect(qualityBadge("")).toBe("SD");
   });
 });

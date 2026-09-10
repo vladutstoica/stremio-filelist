@@ -170,6 +170,21 @@ function compareReleases(a, b) {
   return (b.seeders || 0) - (a.seeders || 0);
 }
 
+// The badge shown beside the stream. getQualityTag substring-matches the whole
+// name, so "1080p.UHD.BluRay" (a 1080p encode of a UHD source) came out as 4K
+// while the specs line said 1080p. Trust the parsed resolution instead, and
+// fall back to the tag only when the name carries no resolution at all.
+const BADGE_BY_RESOLUTION = {
+  "2160p": "4K", "4k": "4K", uhd: "4K", "1440p": "1440p",
+  "1080p": "1080p", "1080i": "1080p", "720p": "720p", "576p": "SD", "480p": "SD",
+};
+
+function qualityBadge(name) {
+  const p = parseRelease(name);
+  const res = p && p.resolution ? String(p.resolution).toLowerCase() : null;
+  return (res && BADGE_BY_RESOLUTION[res]) || getQualityTag(name || "");
+}
+
 function formatSize(bytes) {
   if (!bytes) return "?";
   const gb = bytes / (1024 * 1024 * 1024);
@@ -233,6 +248,7 @@ function findEpisodeFile(files, season, episode) {
 
 module.exports = {
   parseRelease,
+  qualityBadge,
   compareReleases,
   qualityRank,
   SEEDER_FLOOR,
