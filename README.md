@@ -171,11 +171,26 @@ curl http://localhost:7777/status
       "peers": 12,
       "activeStreams": 1
     }
-  ]
+  ],
+  "cache": {
+    "streams": 1,
+    "usedMB": 412.5,
+    "capacityMB": 500
+  }
 }
 ```
 
 States: `downloading` (active stream), `paused` (stream stopped, pending cleanup), `idle`.
+
+`cache` reports the shared RAM window: `usedMB` is what all active streams are
+holding right now, against `capacityMB` (`CACHE_SIZE_MB`). It is the number to
+watch if playback stutters — if `usedMB` sits at `capacityMB` on a high-bitrate
+release, the window is too small for that file and the buffer is thin.
+
+Note that `progress` does **not** climb towards 100%. It reflects the pieces
+currently held, and pieces are dropped once you have watched past them, so on a
+long film it hovers at a few percent and fluctuates rather than filling up.
+That is the window working, not a stalled download.
 
 ## License
 
