@@ -109,6 +109,23 @@ function releaseSpecs(name) {
   return parts.join(" · ");
 }
 
+// Tracker flags from the FileList API. Values arrive as 0/1 and have been seen
+// as both numbers and strings, so test loosely.
+function isSet(v) {
+  return v === 1 || v === "1" || v === true;
+}
+
+// Badges worth showing next to a release. Freeleech matters most: it does not
+// count against your ratio.
+function releaseFlags(item) {
+  if (!item) return [];
+  const flags = [];
+  if (isSet(item.freeleech)) flags.push("\u{1F193}");
+  if (isSet(item.doubleup)) flags.push("2\u00D7UP");
+  if (isSet(item.internal)) flags.push("INTERNAL");
+  return flags;
+}
+
 function formatSize(bytes) {
   if (!bytes) return "?";
   const gb = bytes / (1024 * 1024 * 1024);
@@ -172,6 +189,7 @@ function findEpisodeFile(files, season, episode) {
 
 module.exports = {
   parseRelease,
+  releaseFlags,
   releaseHeadline,
   releaseSpecs,
   formatSize,

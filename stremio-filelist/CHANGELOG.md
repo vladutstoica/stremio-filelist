@@ -17,6 +17,10 @@ Moana (2026)
 Series show the episode, any episode range, and the episode title where the
 release carries one, e.g. `Las Fierbinti S30E02 - Fantoma Partea 2`.
 
+Freeleech, double-upload and internal releases are flagged next to the title
+(`🆓`, `2×UP`, `INTERNAL`), so you can see at a glance which ones do not count
+against your ratio.
+
 Parsing uses `parse-torrent-title` against standard scene naming. Release names
 are convention rather than a standard, so anything unrecognisable falls back to
 the raw name instead of showing something wrong.

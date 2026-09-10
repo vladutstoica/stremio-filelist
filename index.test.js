@@ -1,4 +1,5 @@
 const {
+  releaseFlags,
   releaseHeadline,
   releaseSpecs,
   formatSize,
@@ -249,5 +250,28 @@ describe("releaseSpecs", () => {
   test("returns an empty string when nothing is recognisable", () => {
     expect(releaseSpecs("")).toBe("");
     expect(releaseSpecs("some random upload")).toBe("");
+  });
+});
+
+describe("releaseFlags", () => {
+  test("marks freeleech, doubleup and internal releases", () => {
+    expect(releaseFlags({ freeleech: 1 })).toEqual(["🆓"]);
+    expect(releaseFlags({ doubleup: 1 })).toEqual(["2×UP"]);
+    expect(releaseFlags({ internal: 1 })).toEqual(["INTERNAL"]);
+    expect(releaseFlags({ freeleech: 1, doubleup: 1, internal: 1 })).toEqual(["🆓", "2×UP", "INTERNAL"]);
+  });
+
+  test("accepts the string form the API also returns", () => {
+    expect(releaseFlags({ freeleech: "1" })).toEqual(["🆓"]);
+  });
+
+  test("returns nothing for unset, zero or missing flags", () => {
+    expect(releaseFlags({ freeleech: 0, doubleup: "0", internal: null })).toEqual([]);
+    expect(releaseFlags({})).toEqual([]);
+    expect(releaseFlags(null)).toEqual([]);
+  });
+
+  test("ignores unrelated tracker fields", () => {
+    expect(releaseFlags({ moderated: 1, seeders: 40, category: "Filme HD" })).toEqual([]);
   });
 });

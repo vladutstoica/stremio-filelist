@@ -8,6 +8,7 @@ const { setCapacity, stats: cacheStats, PIN_BYTES, RingStore } = require("./ring
 const { streamWindowed } = require("./window-stream");
 const {
   formatSize,
+  releaseFlags,
   releaseHeadline,
   releaseSpecs,
   parseRelease,
@@ -179,7 +180,11 @@ function buildStream(item, torrentId, fileIdx, episodeFileName) {
   // Scene names like Moana.2026.1080p.AMZN.WEB-DL.DDP5.1.H.264-KyoGo are what
   // Stremio would otherwise show verbatim. Split them into a readable headline,
   // a specs line, and a stats line.
-  const headline = releaseHeadline(raw) + (isPack ? " · Season Pack" : "");
+  const flags = releaseFlags(item);
+  const headline =
+    releaseHeadline(raw) +
+    (isPack ? " · Season Pack" : "") +
+    (flags.length ? `  ${flags.join(" ")}` : "");
   const specs = releaseSpecs(raw);
 
   const stats = [size, `\u{1F464} ${seeders}`];
