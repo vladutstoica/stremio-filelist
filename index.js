@@ -113,7 +113,7 @@ async function getClient() {
 
 const manifest = {
   id: "org.filelist.stremio",
-  version: "1.12.1",
+  version: "1.12.2",
   name: "FileList",
   description: "Stream torrents from FileList.io",
   types: ["movie", "series"],
@@ -208,9 +208,11 @@ function buildStream(item, torrentId, fileIdx, episodeFileName) {
 
   return {
     name: `FileList\n${quality}`,
-    description,
-    // `title` is the SDK's former name for `description`; keep both so older
-    // Stremio clients still render something.
+    // Exactly one of `title` / `description` may be sent. Stremio's client
+    // declares `description` with `alias = "title"`, and serde rejects a
+    // duplicate field when both appear -- the stream then fails to
+    // deserialize and the whole list comes back empty. `title` is the older
+    // name and is accepted by both old and current clients via that alias.
     title: description,
     url,
     behaviorHints: {

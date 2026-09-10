@@ -1,12 +1,13 @@
 {
   "name": "stremio-filelist",
-  "version": "1.12.1",
+  "version": "1.12.2",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
     "dev": "nodemon index.js",
     "test": "jest",
-    "test:integration": "node integration-test.js"
+    "test:integration": "node integration-test.js",
+    "test:streams": "node stream-response-test.js"
   },
   "dependencies": {
     "axios": "^1.0.0",

@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.12.2
+
+Fixes "No streams were found" in Stremio.
+
+1.12.0 sent both `title` and `description` on every stream. Stremio treats
+`title` as an alias of `description`, and rejects a response that carries both
+-- so the whole stream list failed to load even though the add-on was serving
+it correctly. Only one is sent now.
+
+If you were affected, no reconfiguration is needed; update and the list comes
+back.
+
 ## 1.12.1
 
 Fixes the quality badge disagreeing with the release details.
