@@ -15,7 +15,9 @@ Moana (2026)
 ```
 
 Series show the episode, any episode range, and the episode title where the
-release carries one, e.g. `Las Fierbinti S30E02 - Fantoma Partea 2`.
+release carries one, e.g. `Las Fierbinti S30E02 - Fantoma Partea 2`. Season
+packs keep their season number and sub-title (`Insula Iubirii S09 - Casa
+Baietilor`); previously every season of a show rendered identically.
 
 Freeleech, double-upload and internal releases are flagged next to the title
 (`🆓`, `2×UP`, `INTERNAL`), so you can see at a glance which ones do not count

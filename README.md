@@ -6,13 +6,39 @@ A Stremio addon that streams torrents from [FileList.io](https://filelist.io). R
 
 - Search FileList by IMDB ID (movies and series)
 - Handles both **individual episodes** and **season packs** (auto-selects the correct episode file)
+- **Streams from a moving RAM window** — nothing is written to disk, so file size never has to fit in your free space
+- **Readable release names** instead of raw torrent names, with freeleech / double-upload / internal badges
+- Results ranked by playability, then quality, then freeleech, then seeders
 - Streams via a local torrent engine with proper private tracker support
-- Quality tags (4K, 1080p, 720p, HD, SD) and seeder count in stream listing
 - Accessible over local network (use from phone, TV, other devices on WiFi)
-- Auto-pauses download when you stop watching
-- Auto-cleanup of downloaded files after 5 minutes of inactivity
-- Cleans up leftover downloads on startup
-- Status API for monitoring active torrents
+- Auto-pauses download when you stop watching, and drops the torrent after 5 minutes idle
+- Status API for monitoring active streams and cache usage
+
+### What the stream list looks like
+
+Instead of the raw torrent name, each result is split into a title, a specs
+line and a stats line:
+
+```
+FileList │ Moana (2026)  🆓
+  1080p  │ 1080p · WEB-DL · H.264 · DDP5.1
+         │ 19.5 GB · 👤 24 · AMZN · KyoGo
+
+FileList │ Las Fierbinti S30E02 - Fantoma Partea 2
+  1080p  │ 1080p · WEB-DL · H.264 · AAC2.0
+         │ 3.0 GB · 👤 41 · playWEB
+```
+
+Badges: `🆓` freeleech, `2×UP` double upload, `INTERNAL` internal release.
+
+Names are parsed with [parse-torrent-title](https://github.com/clement-escolano/parse-torrent-title)
+against standard scene naming. Because that is convention rather than an
+enforced standard, anything unrecognisable falls back to the raw name.
+
+Results are ordered by **playability first**: releases below a 5-seeder floor
+are pushed to the bottom, since the streaming window is capped and a swarm that
+cannot sustain the bitrate will stutter. Then quality descending, then
+freeleech, then seeders.
 
 ## Option 1: Run standalone
 
@@ -145,7 +171,7 @@ content: >
 ## How it works
 
 1. Stremio requests streams for a movie/series by IMDB ID
-2. The addon searches FileList's API for matching torrents
+2. The addon searches FileList's API for matching torrents, parses each release name into a readable title and specs, and ranks the results
 3. For season packs, it downloads the `.torrent` file to identify which file matches the requested episode
 4. When you click play, the addon starts a local torrent engine (WebTorrent with qBittorrent-compatible peer ID for FileList's client whitelist)
 5. The video is streamed over HTTP to Stremio with range request support (seeking works). Only the pieces around the playhead are ever requested — the window slides forward as you watch, and pieces you've passed are dropped from memory
