@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.12.1
+
+Fixes the quality badge disagreeing with the release details.
+
+The badge was matched against the whole release name, so a 1080p encode of a
+UHD source was labelled `4K`, and any BluRay was labelled `1080p` even when it
+was 720p. It now uses the same resolution shown in the details line and used
+for ranking.
+
 ## 1.12.0
 
 Readable stream names.
