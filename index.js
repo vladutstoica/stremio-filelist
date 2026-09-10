@@ -8,6 +8,7 @@ const { setCapacity, stats: cacheStats, PIN_BYTES, RingStore } = require("./ring
 const { streamWindowed } = require("./window-stream");
 const {
   formatSize,
+  compareReleases,
   releaseFlags,
   releaseHeadline,
   releaseSpecs,
@@ -160,7 +161,7 @@ async function searchFileList(imdbId, categories) {
     const torrents = res.data;
     if (!Array.isArray(torrents)) return [];
 
-    torrents.sort((a, b) => (b.seeders || 0) - (a.seeders || 0));
+    torrents.sort(compareReleases);
     return torrents;
   } catch (e) {
     if (e.response && e.response.status === 404) return [];

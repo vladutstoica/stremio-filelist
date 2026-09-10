@@ -1,4 +1,5 @@
 const {
+  compareReleases,
   releaseFlags,
   releaseHeadline,
   releaseSpecs,
@@ -286,5 +287,72 @@ describe("releaseFlags", () => {
 
   test("ignores unrelated tracker fields", () => {
     expect(releaseFlags({ moderated: 1, seeders: 40, category: "Filme HD" })).toEqual([]);
+  });
+});
+
+describe("releaseHeadline season packs", () => {
+  test("keeps the season when there is no episode", () => {
+    // Without this every season of a show renders identically.
+    expect(releaseHeadline("Insula.Iubirii.S03.720p.ANTP.WEB-DL.AAC2.0.H.264-playWEB")).toBe(
+      "Insula Iubirii S03",
+    );
+  });
+
+  test("includes a season pack sub-title", () => {
+    expect(
+      releaseHeadline("Insula.Iubirii.S09.Casa.Baietilor.1080p.ANTP.WEB-DL.AAC2.0.H.264-playWEB"),
+    ).toBe("Insula Iubirii S09 - Casa Baietilor");
+  });
+
+  test("does not treat a technical tag as a sub-title", () => {
+    expect(releaseHeadline("Insula.Iubirii.S09.REPACK.1080p.ANTP.WEB-DL.AAC2.0.H.264-playWEB")).toBe(
+      "Insula Iubirii S09",
+    );
+  });
+
+  test("handles a season pack with no resolution token", () => {
+    expect(releaseHeadline("Insula.Iubirii.S01.ANTP.WEB-DL.AAC2.0.H.264-playWEB")).toBe(
+      "Insula Iubirii S01",
+    );
+  });
+});
+
+describe("compareReleases", () => {
+  const rel = (name, seeders, freeleech) => ({ name, seeders, freeleech: freeleech ? 1 : 0 });
+
+  test("puts poorly seeded releases last however good they are", () => {
+    const list = [rel("X.2024.2160p.REMUX.H.265-D", 2, true), rel("X.2024.720p.WEB-DL.H.264-A", 99, false)];
+    list.sort(compareReleases);
+    expect(list[0].name).toContain("720p");
+  });
+
+  test("prefers higher quality among playable releases", () => {
+    const list = [rel("X.2024.1080p.WEB-DL.H.264-F", 80, false), rel("X.2024.2160p.WEB-DL.H.265-B", 40, false)];
+    list.sort(compareReleases);
+    expect(list[0].name).toContain("2160p");
+  });
+
+  test("uses freeleech to break ties at the same quality", () => {
+    const list = [rel("X.2024.2160p.WEB-DL.H.265-B", 40, false), rel("X.2024.2160p.WEB-DL.H.265-C", 12, true)];
+    list.sort(compareReleases);
+    expect(list[0].name).toContain("-C");
+  });
+
+  test("falls back to seeders when quality and freeleech match", () => {
+    const list = [rel("X.2024.1080p.WEB-DL.H.264-A", 10, true), rel("X.2024.1080p.WEB-DL.H.264-B", 50, true)];
+    list.sort(compareReleases);
+    expect(list[0].seeders).toBe(50);
+  });
+
+  test("orders a realistic mixed list", () => {
+    const list = [
+      rel("X.2024.720p.WEB-DL.H.264-A", 99, false),
+      rel("X.2024.2160p.WEB-DL.H.265-B", 40, false),
+      rel("X.2024.2160p.WEB-DL.H.265-C", 12, true),
+      rel("X.2024.2160p.REMUX.H.265-D", 2, true),
+      rel("X.2024.1080p.WEB-DL.H.264-E", 60, true),
+    ];
+    list.sort(compareReleases);
+    expect(list.map((r) => r.name.slice(-1))).toEqual(["C", "B", "E", "A", "D"]);
   });
 });

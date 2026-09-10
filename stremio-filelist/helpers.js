@@ -18,7 +18,9 @@ const TECHNICAL = /^(\d{3,4}p|4k|uhd|web-?dl|webrip|bluray|blu-ray|hdtv|bdrip|br
 
 ptt.addHandler(({ title, result }) => {
   if (result.season === undefined || result.episodeName) return;
-  const marker = title.match(/S\d{1,3}E\d{1,3}(?:[-.\s]?E\d{1,3})?/i);
+  const marker = title.match(
+    /(?:^|[.\s_])(S\d{1,3}(?:E\d{1,3}(?:[-.\s]?E\d{1,3})?)?)(?=[.\s_]|$)/i,
+  );
   if (!marker) return;
   const rest = title.slice(marker.index + marker[0].length).replace(/^[.\s_-]+/, "");
   const words = [];
@@ -59,11 +61,15 @@ function releaseHeadline(name) {
   const p = parseRelease(name);
   if (!p || !p.title) return name || "";
 
-  if (p.season !== undefined && p.episode !== undefined) {
+  if (p.season !== undefined) {
     const se = String(p.season).padStart(2, "0");
-    const ep = String(p.episode).padStart(2, "0");
-    const range = p.episodeEnd ? `-E${String(p.episodeEnd).padStart(2, "0")}` : "";
-    let out = `${p.title} S${se}E${ep}${range}`;
+    // A season with no episode is a season pack (Insula.Iubirii.S03.720p...).
+    // Dropping the season made every season of a show look identical.
+    let out =
+      p.episode === undefined
+        ? `${p.title} S${se}`
+        : `${p.title} S${se}E${String(p.episode).padStart(2, "0")}` +
+          (p.episodeEnd ? `-E${String(p.episodeEnd).padStart(2, "0")}` : "");
     if (p.episodeName) out += ` - ${p.episodeName}`;
     return out;
   }
@@ -130,6 +136,40 @@ function releaseFlags(item) {
   return flags;
 }
 
+// Ranking for the stream list. The RAM window changed what "best" means: file
+// size no longer costs anything, but the buffer is capped, so a release whose
+// swarm cannot sustain its bitrate stutters where a smaller one would not.
+// Playability therefore outranks quality.
+const SEEDER_FLOOR = 5;
+const RESOLUTION_RANK = {
+  "2160p": 5, "4k": 5, uhd: 5, "1440p": 4,
+  "1080p": 3, "1080i": 3, "720p": 2, "576p": 1, "480p": 1,
+};
+const TAG_RANK = { "4K": 5, "1080p": 3, "720p": 2, HD: 2, SD: 1 };
+
+function qualityRank(item) {
+  const name = (item && item.name) || "";
+  const p = parseRelease(name);
+  const res = p && p.resolution ? String(p.resolution).toLowerCase() : null;
+  if (res && RESOLUTION_RANK[res]) return RESOLUTION_RANK[res];
+  return TAG_RANK[getQualityTag(name)] || 0;
+}
+
+// Sort comparator: playable first, then quality, then freeleech, then seeders.
+function compareReleases(a, b) {
+  const aUp = (a.seeders || 0) >= SEEDER_FLOOR;
+  const bUp = (b.seeders || 0) >= SEEDER_FLOOR;
+  if (aUp !== bUp) return aUp ? -1 : 1;
+
+  const quality = qualityRank(b) - qualityRank(a);
+  if (quality !== 0) return quality;
+
+  const free = (isSet(b.freeleech) ? 1 : 0) - (isSet(a.freeleech) ? 1 : 0);
+  if (free !== 0) return free;
+
+  return (b.seeders || 0) - (a.seeders || 0);
+}
+
 function formatSize(bytes) {
   if (!bytes) return "?";
   const gb = bytes / (1024 * 1024 * 1024);
@@ -193,6 +233,9 @@ function findEpisodeFile(files, season, episode) {
 
 module.exports = {
   parseRelease,
+  compareReleases,
+  qualityRank,
+  SEEDER_FLOOR,
   releaseFlags,
   releaseHeadline,
   releaseSpecs,

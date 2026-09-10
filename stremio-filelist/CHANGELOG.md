@@ -21,6 +21,11 @@ Freeleech, double-upload and internal releases are flagged next to the title
 (`🆓`, `2×UP`, `INTERNAL`), so you can see at a glance which ones do not count
 against your ratio.
 
+Results are also ordered more usefully. Releases with too few seeders are
+pushed to the bottom -- with the streaming window capped, a release whose swarm
+cannot keep up stutters where a smaller one plays fine -- then by quality, then
+freeleech, then seeders.
+
 Parsing uses `parse-torrent-title` against standard scene naming. Release names
 are convention rather than a standard, so anything unrecognisable falls back to
 the raw name instead of showing something wrong.
