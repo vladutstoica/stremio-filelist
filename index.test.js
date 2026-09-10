@@ -1,4 +1,6 @@
 const {
+  releaseHeadline,
+  releaseSpecs,
   formatSize,
   getQualityTag,
   getSeasonFromName,
@@ -166,5 +168,86 @@ describe("findEpisodeFile", () => {
       idx: 0,
       name: "Show.S02E01.mkv",
     });
+  });
+});
+
+describe("releaseHeadline", () => {
+  test("turns a movie release into title and year", () => {
+    expect(releaseHeadline("Moana.2026.1080p.AMZN.WEB-DL.DDP5.1.H.264-KyoGo")).toBe("Moana (2026)");
+  });
+
+  test("keeps a year that is part of the title", () => {
+    // "2049" must not be mistaken for the release year.
+    expect(
+      releaseHeadline("Blade.Runner.2049.2017.2160p.UHD.BluRay.REMUX.HDR.HEVC.TrueHD.7.1.Atmos-EPSiLON"),
+    ).toBe("Blade Runner 2049 (2017)");
+  });
+
+  test("keeps punctuation and numbers in titles", () => {
+    expect(releaseHeadline("Fast.&.Furious.7.2015.Extended.2160p.MA.WEB-DL.DDP5.1.H.265-CHORTLE")).toBe(
+      "Fast & Furious 7 (2015)",
+    );
+  });
+
+  test("formats a series episode", () => {
+    expect(releaseHeadline("Insula.Iubirii.S10E01.1080p.ANTP.WEB-DL.AAC2.0.H.264-playWEB")).toBe(
+      "Insula Iubirii S10E01",
+    );
+  });
+
+  test("keeps multi-episode ranges", () => {
+    expect(
+      releaseHeadline("Destine.cu.parfum.de.lavanda.S01E31-E33.1080p.ANTP.WEB-DL.AAC2.0.H.264-playWEB"),
+    ).toBe("Destine cu parfum de lavanda S01E31-E33");
+  });
+
+  test("includes an episode title when the release carries one", () => {
+    expect(
+      releaseHeadline("Las.Fierbinti.S30E02.Fantoma.Partea.2.1080p.VOYO.WEB-DL.AAC2.0.H.264-playWEB"),
+    ).toBe("Las Fierbinti S30E02 - Fantoma Partea 2");
+  });
+
+  test("does not mistake technical tokens for an episode title", () => {
+    const out = releaseHeadline("Insula.Iubirii.S10E01.1080p.ANTP.WEB-DL.AAC2.0.H.264-playWEB");
+    expect(out).not.toMatch(/1080p|ANTP/);
+  });
+
+  test("falls back to the raw name for unparseable input", () => {
+    expect(releaseHeadline("")).toBe("");
+    expect(releaseHeadline(null)).toBe("");
+    expect(releaseHeadline("some random upload")).toBe("some random upload");
+  });
+});
+
+describe("releaseSpecs", () => {
+  test("summarises resolution, source, codec and audio", () => {
+    expect(releaseSpecs("Moana.2026.1080p.AMZN.WEB-DL.DDP5.1.H.264-KyoGo")).toBe(
+      "1080p · WEB-DL · H.264 · DDP5.1",
+    );
+  });
+
+  test("renders stereo channels as 2.0 rather than 2", () => {
+    expect(releaseSpecs("Insula.Iubirii.S10E01.1080p.ANTP.WEB-DL.AAC2.0.H.264-playWEB")).toContain("AAC2.0");
+  });
+
+  test("includes Atmos and HDR flags", () => {
+    const out = releaseSpecs("Mayday.2026.2160p.ATVP.WEB-DL.DDP5.1.Atmos.DoVi.HDR.H.265-FLUX");
+    expect(out).toContain("Atmos");
+    expect(out).toContain("HDR");
+    expect(out).toContain("DV");
+  });
+
+  test("marks remuxes and editions", () => {
+    expect(
+      releaseSpecs("Blade.Runner.2049.2017.2160p.UHD.BluRay.REMUX.HDR.HEVC.TrueHD.7.1.Atmos-EPSiLON"),
+    ).toContain("BluRay REMUX");
+    expect(releaseSpecs("Fast.&.Furious.7.2015.Extended.2160p.MA.WEB-DL.DDP5.1.H.265-CHORTLE")).toContain(
+      "Extended",
+    );
+  });
+
+  test("returns an empty string when nothing is recognisable", () => {
+    expect(releaseSpecs("")).toBe("");
+    expect(releaseSpecs("some random upload")).toBe("");
   });
 });

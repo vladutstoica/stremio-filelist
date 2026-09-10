@@ -8,6 +8,9 @@ const { setCapacity, stats: cacheStats, PIN_BYTES, RingStore } = require("./ring
 const { streamWindowed } = require("./window-stream");
 const {
   formatSize,
+  releaseHeadline,
+  releaseSpecs,
+  parseRelease,
   getQualityTag,
   getSeasonFromName,
   getEpisodeFromName,
@@ -107,7 +110,7 @@ async function getClient() {
 
 const manifest = {
   id: "org.filelist.stremio",
-  version: "1.11.0",
+  version: "1.12.0",
   name: "FileList",
   description: "Stream torrents from FileList.io",
   types: ["movie", "series"],
@@ -166,15 +169,28 @@ async function searchFileList(imdbId, categories) {
 }
 
 function buildStream(item, torrentId, fileIdx, episodeFileName) {
-  const quality = getQualityTag(item.name || "");
+  const raw = item.name || "";
+  const quality = getQualityTag(raw);
   const size = formatSize(item.size);
   const seeders = item.seeders || 0;
-  const packLabel = fileIdx !== null && fileIdx !== undefined ? " (Season Pack)" : "";
+  const isPack = fileIdx !== null && fileIdx !== undefined;
+  const parsed = parseRelease(raw);
 
-  let title = `${item.name}\n${size} | ${seeders} seeders`;
-  if (episodeFileName) {
-    title += `\nFile: ${episodeFileName}`;
-  }
+  // Scene names like Moana.2026.1080p.AMZN.WEB-DL.DDP5.1.H.264-KyoGo are what
+  // Stremio would otherwise show verbatim. Split them into a readable headline,
+  // a specs line, and a stats line.
+  const headline = releaseHeadline(raw) + (isPack ? " · Season Pack" : "");
+  const specs = releaseSpecs(raw);
+
+  const stats = [size, `\u{1F464} ${seeders}`];
+  if (parsed && parsed.service) stats.push(parsed.service);
+  if (parsed && parsed.group) stats.push(parsed.group);
+
+  const lines = [headline];
+  if (specs) lines.push(specs);
+  lines.push(stats.join(" \u00B7 "));
+  if (episodeFileName) lines.push(`File: ${episodeFileName}`);
+  const description = lines.join("\n");
 
   const prefix = API_KEY ? `/${API_KEY}` : "";
   const base = BASE_URL ? BASE_URL.replace(/\/$/, "") : `http://${LOCAL_IP}:${PORT}`;
@@ -184,8 +200,11 @@ function buildStream(item, torrentId, fileIdx, episodeFileName) {
   }
 
   return {
-    name: `FileList ${quality}${packLabel}`,
-    title,
+    name: `FileList\n${quality}`,
+    description,
+    // `title` is the SDK's former name for `description`; keep both so older
+    // Stremio clients still render something.
+    title: description,
     url,
     behaviorHints: {
       notWebReady: true,

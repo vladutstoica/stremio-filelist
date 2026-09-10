@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.12.0
+
+Readable stream names.
+
+Stremio previously showed the raw release name, e.g.
+`Moana.2026.1080p.AMZN.WEB-DL.DDP5.1.H.264-KyoGo`. Releases now appear as a
+title, a specs line, and a stats line:
+
+```
+Moana (2026)
+1080p · WEB-DL · H.264 · DDP5.1
+19.5 GB · 👤 24 · AMZN · KyoGo
+```
+
+Series show the episode, any episode range, and the episode title where the
+release carries one, e.g. `Las Fierbinti S30E02 - Fantoma Partea 2`.
+
+Parsing uses `parse-torrent-title` against standard scene naming. Release names
+are convention rather than a standard, so anything unrecognisable falls back to
+the raw name instead of showing something wrong.
+
 ## 1.11.0
 
 Streaming no longer downloads the whole film.
