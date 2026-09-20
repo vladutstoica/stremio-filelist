@@ -5,7 +5,7 @@ const path = require("path");
 const os = require("os");
 const fs = require("fs");
 const { setCapacity, stats: cacheStats, PIN_BYTES, RingStore } = require("./ring-store");
-const { streamWindowed } = require("./window-stream");
+const { streamWindowed, parseRange } = require("./window-stream");
 const {
   formatSize,
   qualityBadge,
@@ -113,7 +113,7 @@ async function getClient() {
 
 const manifest = {
   id: "org.filelist.stremio",
-  version: "1.12.3",
+  version: "1.12.4",
   name: "FileList",
   description: "Stream torrents from FileList.io",
   types: ["movie", "series"],
@@ -325,7 +325,7 @@ async function startTorrent(torrentBuffer) {
         // Watchdog: re-assert the piece window. Eviction is driven by piece
         // I/O, so a lost selection would mean no downloads, no I/O, no
         // cleanup, and a stall that never recovers on its own.
-        if (entry.reapplyWindow) entry.reapplyWindow();
+        for (const reapply of entry.reapplyWindows) reapply();
 
         if (torrent.downloadSpeed > 10240 || torrent.uploadSpeed > 10240) {
           const peers = torrent.numPeers;
@@ -341,7 +341,9 @@ async function startTorrent(torrentBuffer) {
         timeout: null,
         statsInterval,
         activeStreams: 0,
-        reapplyWindow: null,
+        // One entry per live reader: several requests are open at once and each
+        // one owns its own piece window.
+        reapplyWindows: new Set(),
       });
 
       resolve(torrent);
@@ -363,13 +365,31 @@ const streamPath = API_KEY ? "/:apiKey/stream-video/:torrentId/:fileIdx?" : "/st
 app.get(streamPath, validateApiKey, async (req, res) => {
   const { torrentId } = req.params;
   const fileIdx = req.params.fileIdx ? parseInt(req.params.fileIdx, 10) : null;
+  // Set once onStreamStart has run, so any throw below still hands the count
+  // back instead of stranding it. finish() is the only thing that decrements,
+  // and only once, whether we got here by the socket closing, by finishing the
+  // body, or by throwing.
+  let counted = null;
+  let ended = false;
+  const finish = () => {
+    if (ended || !counted) return;
+    ended = true;
+    onStreamEnd(counted);
+  };
 
   try {
     const torrentBuffer = await getTorrentBuffer(torrentId);
     const torrent = await startTorrent(torrentBuffer);
 
     let file;
-    if (fileIdx !== null && fileIdx < torrent.files.length) {
+    // Both bounds, and integral: a negative or non-numeric index used to sail
+    // past `fileIdx < files.length` and leave `file` undefined, which threw on
+    // file.length one line after the stream had already been counted -- and the
+    // close handler that decrements is registered further down still. That leaks
+    // activeStreams permanently, so the idle timeout never arms and the torrent
+    // and its store stay resident for the life of the process. Fall back to the
+    // largest file rather than erroring: the index is a hint from a URL.
+    if (Number.isInteger(fileIdx) && fileIdx >= 0 && fileIdx < torrent.files.length) {
       file = torrent.files[fileIdx];
     } else {
       // Pick largest file
@@ -379,20 +399,15 @@ app.get(streamPath, validateApiKey, async (req, res) => {
     // No file.select() here: selecting the file downloads all of it. The
     // windowed reader below selects only the slice around the playhead.
     onStreamStart(torrent.infoHash);
+    counted = torrent.infoHash;
 
     const fileSize = file.length;
     const range = req.headers.range;
 
-    let start = 0;
-    let end = fileSize - 1;
-    if (range) {
-      const parts = range.replace(/bytes=/, "").split("-");
-      start = parseInt(parts[0], 10) || 0;
-      end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
-    }
+    const { start, end } = parseRange(range, fileSize);
     if (start >= fileSize || end >= fileSize || start > end) {
       res.status(416).set("Content-Range", `bytes */${fileSize}`).end();
-      onStreamEnd(torrent.infoHash);
+      finish();
       return;
     }
 
@@ -413,12 +428,6 @@ app.get(streamPath, validateApiKey, async (req, res) => {
       });
     }
 
-    let ended = false;
-    const finish = () => {
-      if (ended) return;
-      ended = true;
-      onStreamEnd(torrent.infoHash);
-    };
     res.on("close", finish);
 
     await streamWindowed(torrent, file, start, end, res, activeTorrents.get(torrent.infoHash), {
@@ -427,7 +436,12 @@ app.get(streamPath, validateApiKey, async (req, res) => {
     finish();
   } catch (e) {
     console.error("Stream error:", e.message);
-    res.status(500).send("Failed to stream");
+    finish();
+    // Once the 200/206 is out, res.status() throws ERR_HTTP_HEADERS_SENT and the
+    // client is left holding a half-written body -- drop the socket instead so
+    // it retries cleanly.
+    if (res.headersSent) res.destroy();
+    else res.status(500).send("Failed to stream");
   }
 });
 

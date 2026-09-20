@@ -1,7 +1,7 @@
 // Bounded in-memory chunk store for streaming torrents.
 //
 // Instead of writing every piece of a film to disk, we keep only a moving
-// window of pieces around the playhead in RAM and drop the rest. Peak usage is
+// window of pieces around each reader's position in RAM and drop the rest. Peak usage is
 // the window size, not the file size, so a 4K remux costs the same as an
 // episode and nothing ever touches the Home Assistant Green's eMMC.
 //
@@ -64,21 +64,66 @@ class RingStore {
     this.pinLow = pinCount - 1;
     this.pinHigh = this.lastChunkIndex - pinCount + 1;
 
-    // Pieces we still want, as an inclusive index range. Updated as the
-    // playhead moves; eviction prefers everything outside it.
-    this.windowFrom = 0;
-    this.windowTo = this.lastChunkIndex;
+    // Pieces we still want, as one inclusive index range per reader. Players
+    // keep several requests open at once (a header probe, a tail probe, the
+    // playhead), and a single shared range would mean the newest request
+    // decides what the playhead is allowed to keep -- which evicts the
+    // read-ahead it is about to need.
+    this.windows = new Map(); // reader token -> { from, to }
+
+    // Pieces a read is in flight on, index -> readers waiting. Defence in
+    // depth, not the cure: the read that matters most -- the one WebTorrent
+    // issues after its bitfield said the piece is verified -- races eviction
+    // before it ever reaches get(), and nothing here can see that coming; the
+    // reader's retry is what covers it. What this does buy is that a piece
+    // stays in the map for as long as a read is outstanding on it, so a second
+    // reader landing on the same piece in the same tick still finds it.
+    this.pending = new Map();
 
     registry.add(this);
   }
 
-  setWindow(from, to) {
-    this.windowFrom = Math.max(0, from);
-    this.windowTo = Math.min(this.lastChunkIndex, to);
+  setWindow(token, from, to) {
+    this.windows.set(token, {
+      from: Math.max(0, from),
+      to: Math.min(this.lastChunkIndex, to),
+    });
+  }
+
+  clearWindow(token) {
+    this.windows.delete(token);
+  }
+
+  readerCount() {
+    return this.windows.size;
+  }
+
+  // A piece is wanted if any reader's window covers it. With no reader
+  // registered nothing is outside the window, which keeps eviction falling
+  // back to insertion order.
+  inWindow(index) {
+    if (this.windows.size === 0) return true;
+    for (const { from, to } of this.windows.values()) {
+      if (index >= from && index <= to) return true;
+    }
+    return false;
   }
 
   isPinned(index) {
     return index <= this.pinLow || index >= this.pinHigh;
+  }
+
+  // Counted rather than a plain set: two readers can wait on the same piece,
+  // and the first one finishing must not unpin it for the second.
+  acquirePending(index) {
+    this.pending.set(index, (this.pending.get(index) || 0) + 1);
+  }
+
+  releasePending(index) {
+    const n = this.pending.get(index);
+    if (n === undefined) return;
+    if (n > 1) this.pending.set(index, n - 1);
+    else this.pending.delete(index);
   }
 
   put(index, buf, cb = () => {}) {
@@ -113,29 +158,68 @@ class RingStore {
       return process.nextTick(cb, new Error(`Chunk ${index} not in window`));
     }
 
-    if (!opts) return process.nextTick(cb, null, buf);
+    // Hold the piece until the reader has actually taken it. This read itself is
+    // safe either way -- `buf` above is a live reference and survives eviction
+    // -- but keeping the index out of evict()'s reach means a concurrent reader
+    // asking for the same piece this tick is not told it is gone. The release
+    // has to happen in a finally: a throwing callback that left the index
+    // pinned would cost us that piece's worth of budget for the life of the
+    // torrent.
+    this.acquirePending(index);
+    process.nextTick(() => {
+      try {
+        if (!opts) return cb(null, buf);
 
-    const from = opts.offset || 0;
-    const to = opts.length ? from + opts.length : buf.length;
-    if (from < 0 || to > buf.length) {
-      return process.nextTick(cb, new Error("Invalid offset and/or length"));
-    }
-    process.nextTick(cb, null, buf.slice(from, to));
+        const from = opts.offset || 0;
+        const to = opts.length ? from + opts.length : buf.length;
+        if (from < 0 || to > buf.length) {
+          return cb(new Error("Invalid offset and/or length"));
+        }
+        cb(null, buf.slice(from, to));
+      } finally {
+        this.releasePending(index);
+      }
+    });
   }
 
   // Drop pieces until we are back inside our share of the global budget.
-  // Preference order: behind the window, then ahead of it, then oldest.
+  // Preference order: behind every window, then ahead of every window (a piece
+  // sitting in a gap between two windows counts as ahead), then inside one,
+  // furthest from the reader first. A piece with a read in flight is never
+  // dropped, whichever bucket it would have fallen into.
   evict() {
     const limit = shareFor(this);
     if (this.bytes <= limit) return;
+
+    // Behind means behind every reader; ahead means ahead of every reader. With
+    // no reader registered the whole file counts as wanted, as it did when the
+    // window was a single range defaulting to the entire file.
+    let low = 0;
+    let high = this.lastChunkIndex;
+    if (this.windows.size > 0) {
+      low = Infinity;
+      high = -Infinity;
+      for (const { from, to } of this.windows.values()) {
+        if (from < low) low = from;
+        if (to > high) high = to;
+      }
+    }
 
     const behind = [];
     const ahead = [];
     const rest = [];
     for (const index of this.chunks.keys()) {
       if (this.isPinned(index)) continue;
-      if (index < this.windowFrom) behind.push(index);
-      else if (index > this.windowTo) ahead.push(index);
+      // A read is already queued against this piece; dropping it now is exactly
+      // the race the pending map exists for. If skipping them all leaves us
+      // over the limit we stay over it until those reads finish -- a few pieces
+      // of overshoot for one tick, rather than pulling a buffer out from under
+      // a reader. The loop below is a single pass either way, so eviction
+      // always terminates having freed whatever it could.
+      if (this.pending.has(index)) continue;
+      if (index < low) behind.push(index);
+      else if (index > high) ahead.push(index);
+      else if (!this.inWindow(index)) ahead.push(index); // between two windows
       else rest.push(index);
     }
     behind.sort((a, b) => a - b); // furthest behind the playhead first
@@ -182,6 +266,8 @@ class RingStore {
     if (this.closed) return process.nextTick(cb, new Error("Storage is closed"));
     this.closed = true;
     registry.delete(this);
+    this.windows.clear();
+    this.pending.clear();
     this.chunks.clear();
     this.bytes = 0;
     this.torrent = null;

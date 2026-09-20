@@ -1,5 +1,33 @@
 # Changelog
 
+## 1.12.4
+
+Fixes playback stopping with an error after a few minutes.
+
+The player does not open one connection to a film, it opens several: the one
+following what you are watching, plus short ones that re-read the beginning
+and the end of the file, plus the occasional re-open of the whole thing. All of
+them were sharing a single memory window, and whichever connection asked last
+decided which part of the film was worth keeping. So the pieces just ahead of
+what you were watching were thrown away moments before they were needed,
+fetched again, and thrown away again. Playback ran out of material and stopped,
+while the download itself carried on at full speed.
+
+Each connection now keeps its own window, and a window is never shrunk by a
+connection that turns up later. A piece that is already being read can no
+longer be discarded out from under the reader.
+
+The trade-off is that each connection gets a smaller share of the memory than
+the single shared window used to hand out, so there is less read-ahead. At
+normal bitrates there is still well over half a minute of buffer; on very high
+bitrate releases, such as 4K remuxes, raise `CACHE_SIZE_MB`.
+
+Also, a stream that genuinely cannot continue -- the piece it is waiting for
+never arrives -- now drops the connection after a few seconds instead of ending
+as though the film had finished. Ending quietly is what the player and the
+proxy in front of it were turning into that error; a dropped connection is
+something the player simply reconnects to.
+
 ## 1.12.3
 
 Fixes playback stopping after a few minutes.

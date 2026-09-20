@@ -1,5 +1,5 @@
 name: Stremio FileList
-version: "1.12.3"
+version: "1.12.4"
 slug: stremio-filelist
 description: Stream torrents from FileList.io through Stremio
 url: https://github.com/vladutstoica/stremio-filelist
