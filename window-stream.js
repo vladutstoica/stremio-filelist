@@ -138,6 +138,13 @@ async function streamWindowed(torrent, file, start, end, res, entry, opts = {}) 
   // registers: a single slot would only ever re-assert the newest request's
   // window, which is usually a probe rather than the playhead.
   if (entry && entry.reapplyWindows) entry.reapplyWindows.add(applyWindow);
+  // Report where this reader actually is, so the stats line can say how far
+  // through the film playback has got. torrent.progress cannot answer that: it
+  // is the share of the file held in RAM, which sits at cache/filesize forever.
+  const reportPos = () => {
+    if (entry && entry.positions) entry.positions.set(token, { pos, end, name: file.name });
+  };
+  reportPos();
 
   let stalls = 0;
   let stalledSince = 0;
@@ -158,6 +165,7 @@ async function streamWindowed(torrent, file, start, end, res, entry, opts = {}) 
           if (!res.write(chunk)) await waitForDrain(res);
           if (res.writableEnded || res.destroyed) break;
           pos += chunk.length;
+          reportPos();
           advanced = true;
           if (pos > subEnd || pos >= refreshAt) break;
         }
@@ -198,6 +206,7 @@ async function streamWindowed(torrent, file, start, end, res, entry, opts = {}) 
     if (!res.writableEnded && !res.destroyed) console.error("Stream read error:", e.message);
   } finally {
     if (entry && entry.reapplyWindows) entry.reapplyWindows.delete(applyWindow);
+    if (entry && entry.positions) entry.positions.delete(token);
     if (store) store.clearWindow(token);
     // Not after a destroy: ending a socket we just reset would either throw or
     // signal a clean finish, and the reset is the signal we meant to send.

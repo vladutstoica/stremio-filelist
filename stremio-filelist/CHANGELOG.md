@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.12.5
+
+Makes the add-on log say where playback has actually got to.
+
+The log line used to report "Progress", which was the share of the film sitting
+in memory -- so on a 16 GB film with a 500 MB cache it read 3% and stayed there,
+whether you were five minutes in or almost at the end, and whether the stream
+was healthy or had stopped dead. It now reports how far through the file the
+player has read, and how much the cache is holding:
+
+    Peers: 17 | Down: 7.8 MB/s | At: 11.6 GB (70.8%) | Cache: 486 MB in 62 pieces
+
+If "At" stops moving while the download carries on, something is wrong. That is
+the thing the old line could never show.
+
+Nothing about streaming itself changed in this release.
+
 ## 1.12.4
 
 Fixes playback stopping with an error after a few minutes.

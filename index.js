@@ -5,7 +5,7 @@ const path = require("path");
 const os = require("os");
 const fs = require("fs");
 const { setCapacity, stats: cacheStats, PIN_BYTES, RingStore } = require("./ring-store");
-const { streamWindowed, parseRange } = require("./window-stream");
+const { streamWindowed, parseRange, ringStoreOf } = require("./window-stream");
 const {
   formatSize,
   qualityBadge,
@@ -113,7 +113,7 @@ async function getClient() {
 
 const manifest = {
   id: "org.filelist.stremio",
-  version: "1.12.4",
+  version: "1.12.5",
   name: "FileList",
   description: "Stream torrents from FileList.io",
   types: ["movie", "series"],
@@ -331,8 +331,24 @@ async function startTorrent(torrentBuffer) {
           const peers = torrent.numPeers;
           const down = (torrent.downloadSpeed / 1024 / 1024).toFixed(1);
           const up = (torrent.uploadSpeed / 1024 / 1024).toFixed(1);
-          const progress = (torrent.progress * 100).toFixed(1);
-          console.log(`[${torrent.name.substring(0, 40)}] Peers: ${peers} | Down: ${down} MB/s | Up: ${up} MB/s | Progress: ${progress}%`);
+          // Where playback has actually got to, not torrent.progress -- that is
+          // the share of the file sitting in RAM, so it parks at cache/filesize
+          // (3% of a 16 GB film on a 500 MB budget) and reads the same whether
+          // the stream is healthy or dead.
+          let at = "idle";
+          let furthest = null;
+          for (const r of entry.positions.values()) {
+            if (!furthest || r.pos > furthest.pos) furthest = r;
+          }
+          if (furthest) {
+            const pct = ((furthest.pos / (furthest.end + 1)) * 100).toFixed(1);
+            // formatSize answers "?" for zero, which reads as broken rather
+            // than as the start of the file.
+            at = `${furthest.pos ? formatSize(furthest.pos) : "0 MB"} (${pct}%)`;
+          }
+          const store = ringStoreOf(torrent);
+          const held = store ? `${formatSize(store.bytes)} in ${store.chunks.size} pieces` : "n/a";
+          console.log(`[${torrent.name.substring(0, 40)}] Peers: ${peers} | Down: ${down} MB/s | Up: ${up} MB/s | At: ${at} | Cache: ${held}`);
         }
       }, 5000);
 
@@ -342,8 +358,9 @@ async function startTorrent(torrentBuffer) {
         statsInterval,
         activeStreams: 0,
         // One entry per live reader: several requests are open at once and each
-        // one owns its own piece window.
+        // one owns its own piece window, and sits at its own byte offset.
         reapplyWindows: new Set(),
+        positions: new Map(),
       });
 
       resolve(torrent);
@@ -455,10 +472,22 @@ app.get(statusPath, validateApiKey, (req, res) => {
     if (entry.activeStreams === 0 && entry.timeout) state = "paused";
     else if (entry.activeStreams === 0) state = "idle";
 
+    let furthest = null;
+    for (const r of entry.positions.values()) {
+      if (!furthest || r.pos > furthest.pos) furthest = r;
+    }
+    const store = ringStoreOf(t);
+
     torrents.push({
       name: t.name,
       infoHash,
       state,
+      // Where playback is. `cached` is what torrent.progress used to report
+      // here: the share of the file held in RAM, which is the cache size, not
+      // anything about playback.
+      playheadBytes: furthest ? furthest.pos : null,
+      playheadPct: furthest ? Math.round((furthest.pos / (furthest.end + 1)) * 1000) / 10 : null,
+      cachedMB: store ? Math.round((store.bytes / 1048576) * 10) / 10 : null,
       progress: Math.round(t.progress * 1000) / 10,
       downloadSpeed: Math.round(t.downloadSpeed / 1024),
       uploadSpeed: Math.round(t.uploadSpeed / 1024),
