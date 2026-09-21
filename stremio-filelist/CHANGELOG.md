@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.12.6
+
+Fixes playback pausing for a few seconds at a time on large 4K releases.
+
+Pieces of a film arrive in order, and if the one needed next is coming from a
+slow peer, everything stops until it lands -- the other peers have already sent
+what they were asked for and sit idle. In the log this looks like the download
+speed swinging between full speed and nothing.
+
+The underlying library can rescue a piece from a slow peer and ask a faster one
+instead, but it only did so for the piece playback was already waiting on, and
+only after it had stopped. Worse, on big films it worked out to no piece at all:
+the rule it used assumed pieces smaller than a megabyte, and a 27 GB film has
+pieces many times that size. The add-on now marks the next few seconds of film
+ahead of where you are watching, so a slow peer is replaced before playback
+reaches it rather than after it has already stalled.
+
+If pauses persist on a very large release, it is worth raising MAX_CONNS -- more
+peers means more alternatives to swap to -- and DOWNLOAD_LIMIT_MBPS, which at
+its default of 8 MB/s is close to what a 4K IMAX release needs just to keep up.
+
 ## 1.12.5
 
 Makes the add-on log say where playback has actually got to.

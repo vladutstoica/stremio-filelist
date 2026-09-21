@@ -33,6 +33,11 @@ function fakeTorrent(reads) {
     pieceLength: CHUNK,
     store,
     _critical: [],
+    // Matches WebTorrent's own: flag the range, never clear it -- clearing is
+    // the reader's job.
+    critical(from, to) {
+      for (let i = from; i <= to; i++) this._critical[i] = true;
+    },
     files: [],
   };
   const file = {
@@ -208,7 +213,10 @@ test("a fifth reader gets no window while four incumbents keep theirs", async ()
   // a probe -- it has to be the MAX_WINDOW_READERS check that refuses it.
   const body = Buffer.alloc(CHUNK, 9);
   const start = 50 * CHUNK;
-  const torrent = { pieceLength: CHUNK, store, _critical: [], files: [] };
+  const torrent = {
+    pieceLength: CHUNK, store, _critical: [], files: [],
+    critical(from, to) { for (let i = from; i <= to; i++) this._critical[i] = true; },
+  };
   const file = {
     name: "film.mkv",
     offset: 0,
@@ -262,7 +270,10 @@ test("leaves no window or listener behind after many short-lived readers", async
   setCapacity(1000 * CHUNK);
   const store = newStore();
   const entry = { reapplyWindows: new Set() };
-  const torrent = { pieceLength: CHUNK, store, _critical: [], files: [] };
+  const torrent = {
+    pieceLength: CHUNK, store, _critical: [], files: [],
+    critical(from, to) { for (let i = from; i <= to; i++) this._critical[i] = true; },
+  };
   const runs = [];
   for (let i = 0; i < 300; i++) {
     const body = Buffer.alloc(CHUNK, i % 256);
@@ -325,4 +336,30 @@ test("treats an unparseable range as unsatisfiable rather than NaN", () => {
   // honoured. Players do not send either for video.
   expect(parseRange("bytes=1-2-3", SIZE)).toEqual({ start: 1, end: 2 });
   expect(parseRange("bytes=0-1,2-3", SIZE)).toEqual({ start: 0, end: 1 });
+});
+
+// A piece flagged critical can be hotswapped away from a peer that is sitting
+// on it, but WebTorrent's own reader flags only the piece it is already stuck
+// on -- and for pieces of 1MB or more its _criticalLength works out to zero, so
+// the rescue only began once playback had already stopped on that piece. The
+// band has to run ahead of the read head, and has to be let go behind it.
+test("flags pieces ahead of the read head critical, and clears them behind", async () => {
+  const body = Buffer.alloc(8 * CHUNK, 4);
+  const { torrent, file, store } = fakeTorrent([[body], [body], [body], [body]]);
+  const { res } = sink();
+  const start = 60 * CHUNK;
+
+  await streamWindowed(torrent, file, start, start + body.length * 3 - 1, res, null, {});
+
+  const flagged = torrent._critical.reduce((n, v, i) => (v ? n.concat(i) : n), []);
+  expect(flagged.length).toBeGreaterThan(0);
+
+  // Nothing behind where the reader finished is still flagged: a piece already
+  // played is never worth swapping a peer for.
+  const head = Math.floor((file.offset + start) / CHUNK);
+  expect(Math.min(...flagged)).toBeGreaterThanOrEqual(head);
+
+  // And the band is short -- it covers the next few seconds, not the window.
+  expect(flagged.length).toBeLessThanOrEqual(Math.ceil((32 * 1024 * 1024) / CHUNK) + 1);
+  store.close();
 });

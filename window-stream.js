@@ -54,6 +54,19 @@ const WINDOW_FRACTION = 0.55;
 // than a reader evicting its own pieces mid-stream.
 const MAX_WINDOW_READERS = 4;
 
+// How far ahead of the playhead pieces are flagged critical. Critical is what
+// lets WebTorrent hotswap a piece away from a slow peer and hand it to a fast
+// one (see _request in webtorrent/lib/torrent.js), and its own reader flags
+// only the piece it is already stuck on: _criticalLength is
+// min((1MB / pieceLength) | 0, 2), which is 0 for any torrent with pieces of
+// 1MB or more -- every large film. So the rescue only ever started after
+// playback had already stalled on that piece. Flagging a short band ahead of
+// the read head instead means the swap happens before the reader gets there.
+// Kept short on purpose: it is the next few seconds that matter, and a wide
+// band would have the swarm churning reservations across the whole window.
+const CRITICAL_AHEAD_BYTES = 32 * 1024 * 1024;
+const CRITICAL_AHEAD_MIN_PIECES = 3;
+
 function windowFor(store, readAheadPct) {
   // Dividing by a fixed count is what guarantees any set of live windows fits
   // the store's share together, whatever order they registered in.
@@ -123,10 +136,22 @@ async function streamWindowed(torrent, file, start, end, res, entry, opts = {}) 
     const from = Math.floor((file.offset + Math.max(0, pos - behind)) / pieceLength);
     const to = Math.floor((file.offset + Math.min(end, pos + ahead)) / pieceLength);
     store.setWindow(token, from, to);
-    // WebTorrent flags a piece critical when a read stream waits on it and
-    // never clears the flag, so without this every piece we ever waited on
-    // stays in duplicate-request mode for the life of the torrent.
-    for (let i = 0; i < from; i++) {
+
+    // Flag the pieces immediately ahead of the read head, so a slow peer
+    // holding one of them is swapped out before playback reaches it.
+    const head = Math.floor((file.offset + pos) / pieceLength);
+    const span = Math.max(CRITICAL_AHEAD_MIN_PIECES, Math.ceil(CRITICAL_AHEAD_BYTES / pieceLength));
+    const criticalTo = Math.min(
+      Math.floor((file.offset + end) / pieceLength),
+      head + span,
+    );
+    if (criticalTo >= head) torrent.critical(head, criticalTo);
+
+    // WebTorrent never clears the flag once set, so without this every piece we
+    // have passed stays in hotswap mode for the life of the torrent. Clear
+    // behind the read head rather than behind the window: pieces already played
+    // are never worth swapping a peer for.
+    for (let i = 0; i < head; i++) {
       if (torrent._critical[i]) torrent._critical[i] = false;
     }
     return { ahead, behind };
