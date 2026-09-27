@@ -37,22 +37,26 @@ function ringStoreOf(torrent) {
 // playback starves. This leaves roughly 45% of the budget as headroom for
 // pieces in flight and for what sits behind the read head. It is the share of
 // the budget available to all windows together, not to one: windowFor() divides
-// it by MAX_WINDOW_READERS.
+// it by WINDOW_READER_DIVISOR.
 const WINDOW_FRACTION = 0.55;
 
-// How many readers may hold a window at once: a playhead, a header probe, a
-// tail probe and one spare, which is the traffic shape a player actually
-// produces. This caps windows, not streams -- a reader past the cap still
-// streams, it just runs without read-ahead, the way a probe does.
-// The divisor is this constant rather than the live reader count on
-// purpose. Sizing against readerCount() meant a request that turned up later
-// retroactively narrowed the window of one already streaming, and the very next
-// put() then evicted read-ahead that reader had already fetched and still
-// wanted -- self-inflicted eviction, no second reader's window even had to
-// overlap. A window sized once and never shrunk cannot do that. The cost is
-// that a lone reader leaves three shares unused; that headroom is far cheaper
-// than a reader evicting its own pieces mid-stream.
-const MAX_WINDOW_READERS = 4;
+// The divisor that sizes a window -- and only a divisor. It used to be a quota:
+// the fifth reader was refused a window, on the theory that four full windows
+// already fill the budget. That was wrong twice over. Windows overlap -- a
+// player opens several requests at the same offset and their windows cover the
+// same pieces, costing the store nothing extra -- and the refusal always landed
+// on the newest request, which after a seek is the real playhead, left running
+// unprotected while abandoned duplicates held the windows. Observed in the
+// wild: playback pinned at byte 0 with two peers while four duplicate requests
+// at byte 0 held every window. Everyone gets a window now.
+//
+// A window is still sized once, when its reader registers, and never shrunk: a
+// request arriving later must not narrow one already streaming, or the next
+// put() evicts read-ahead that reader had already fetched and still wants.
+const WINDOW_READER_DIVISOR = 4;
+// Past this many live readers, windows are sized against the real count
+// instead, so that even entirely disjoint ones still fit the share together.
+const WINDOW_SHARE_FROM = 7;
 
 // How far ahead of the playhead pieces are flagged critical. Critical is what
 // lets WebTorrent hotswap a piece away from a slow peer and hand it to a fast
@@ -67,10 +71,12 @@ const MAX_WINDOW_READERS = 4;
 const CRITICAL_AHEAD_BYTES = 32 * 1024 * 1024;
 const CRITICAL_AHEAD_MIN_PIECES = 3;
 
-function windowFor(store, readAheadPct) {
-  // Dividing by a fixed count is what guarantees any set of live windows fits
-  // the store's share together, whatever order they registered in.
-  const budget = (shareFor(store) * WINDOW_FRACTION) / MAX_WINDOW_READERS;
+function windowFor(store, readAheadPct, readers = 1) {
+  // A fixed divisor up to WINDOW_SHARE_FROM readers, so a window's size does
+  // not depend on who else happens to be reading; past that the real count,
+  // because that many disjoint windows would otherwise overflow the share.
+  const divisor = Math.max(WINDOW_READER_DIVISOR, Math.min(readers, 32));
+  const budget = (shareFor(store) * WINDOW_FRACTION) / divisor;
   return {
     ahead: Math.max(store.chunkLength * 2, Math.floor((budget * readAheadPct) / 100)),
     behind: Math.max(store.chunkLength, Math.floor((budget * (100 - readAheadPct)) / 100)),
@@ -113,26 +119,16 @@ async function streamWindowed(torrent, file, start, end, res, entry, opts = {}) 
   const pieceLength = torrent.pieceLength;
   const token = `reader-${nextToken++}`;
   const probe = isProbeRange(store, file, pieceLength, start, end);
-  let refused = false; // logged once if this reader never gets a window
   let pos = start; // bytes handed to the socket, i.e. where the TV actually is
 
+  let sized = null; // fixed when this reader registers, never renegotiated
   const applyWindow = () => {
     if (!store || probe) return null;
-    // Past MAX_WINDOW_READERS the windows would no longer fit the share
-    // together, and shrinking the readers that got here first is the thrash the
-    // fixed divisor exists to prevent. An excess reader runs without a window,
-    // like a probe does, rather than costing everyone else their read-ahead.
-    if (!store.windows.has(token) && store.readerCount() >= MAX_WINDOW_READERS) {
-      // Once per reader, not once per loop: a reader running unwindowed is the
-      // one state in here that looks exactly like healthy playback until it
-      // stalls, so it has to leave a trace in the log.
-      if (!refused) {
-        refused = true;
-        console.log(`No window free for ${file.name} at byte ${pos} (${store.readerCount()} readers)`);
-      }
-      return null;
+    if (!sized) {
+      const readers = store.readerCount() + (store.windows.has(token) ? 0 : 1);
+      sized = windowFor(store, readAheadPct, readers >= WINDOW_SHARE_FROM ? readers : 1);
     }
-    const { ahead, behind } = windowFor(store, readAheadPct);
+    const { ahead, behind } = sized;
     const from = Math.floor((file.offset + Math.max(0, pos - behind)) / pieceLength);
     const to = Math.floor((file.offset + Math.min(end, pos + ahead)) / pieceLength);
     store.setWindow(token, from, to);
@@ -167,6 +163,10 @@ async function streamWindowed(torrent, file, start, end, res, entry, opts = {}) 
   // through the film playback has got. torrent.progress cannot answer that: it
   // is the share of the file held in RAM, which sits at cache/filesize forever.
   const reportPos = () => {
+    // Probes are left out on purpose. A tail probe sits at the last bytes of
+    // the file, so including it reported 100% while playback was still at the
+    // start -- the same sort of meaningless number this line replaced.
+    if (probe) return;
     if (entry && entry.positions) entry.positions.set(token, { pos, end, name: file.name });
   };
   reportPos();
@@ -281,5 +281,6 @@ module.exports = {
   isProbeRange,
   parseRange,
   WINDOW_FRACTION,
-  MAX_WINDOW_READERS,
+  WINDOW_READER_DIVISOR,
+  WINDOW_SHARE_FROM,
 };

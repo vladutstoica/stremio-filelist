@@ -1,5 +1,29 @@
 # Changelog
 
+## 1.13.0
+
+Fixes playback that would not start, or froze at the very beginning, while the
+add-on showed almost no peers and no download.
+
+Each connection to a film gets its own slice of memory to read ahead into.
+1.12.4 handed out only four of those slices per film, on the assumption that
+was all a player needed. It is not: Stremio opens six or seven connections when
+you press play, and once four of them had taken a slice the rest got none --
+including, after you skip forward, the connection actually playing the film.
+Those connections were left without read-ahead and stalled. The limit is gone;
+the slices simply get smaller when many connections are open, which costs
+nothing because connections that sit at the same point in the film share the
+same data anyway.
+
+The "At" figure in the log was also wrong. A player keeps a small connection
+open at the very end of the file to read the index, and that connection was
+being taken for the furthest point reached -- so the log claimed 100% while the
+film was still at the start. It now ignores those.
+
+Also quietens a "possible memory leak" warning that appeared when six or more
+connections were open at once. Nothing was leaking; the limit it complains
+about was simply lower than the number of connections a player makes.
+
 ## 1.12.6
 
 Fixes playback pausing for a few seconds at a time on large 4K releases.

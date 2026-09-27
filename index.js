@@ -113,7 +113,7 @@ async function getClient() {
 
 const manifest = {
   id: "org.filelist.stremio",
-  version: "1.12.6",
+  version: "1.13.0",
   name: "FileList",
   description: "Stream torrents from FileList.io",
   types: ["movie", "series"],
@@ -316,6 +316,12 @@ async function startTorrent(torrentBuffer) {
     };
     client.add(torrentBuffer, addOpts, (torrent) => {
       console.log(`Torrent started: ${torrent.name} (${torrent.files.length} files)`);
+
+      // A player opens half a dozen requests at once, and each read waiting on
+      // a piece parks a one-shot 'verified' listener on the torrent. Node warns
+      // past ten and calls it a leak; here it is just the reader count. The
+      // listeners are removed when their piece lands.
+      torrent.setMaxListeners(64);
 
       // Stats logging — only log when actually transferring (> 10 KB/s)
       const statsInterval = setInterval(() => {

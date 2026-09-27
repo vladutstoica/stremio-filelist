@@ -5,7 +5,8 @@ const {
   windowFor,
   parseRange,
   WINDOW_FRACTION,
-  MAX_WINDOW_READERS,
+  WINDOW_READER_DIVISOR,
+  WINDOW_SHARE_FROM,
 } = require("./window-stream");
 const { RingStore, setCapacity, shareFor, DEFAULT_CAPACITY } = require("./ring-store");
 
@@ -143,10 +144,10 @@ test("sizes every reader's window against the same fixed share", () => {
   store.setWindow("reopen", 40, 50);
   expect(windowFor(store, 95)).toEqual(alone);
 
-  // MAX_WINDOW_READERS windows of this size still fit the store's share. Sized
+  // WINDOW_READER_DIVISOR windows of this size still fit the store's share. Sized
   // above the two-piece floors in windowFor(), which a cache this small would
   // otherwise dominate.
-  const budget = Math.floor((shareFor(store) * WINDOW_FRACTION) / MAX_WINDOW_READERS);
+  const budget = Math.floor((shareFor(store) * WINDOW_FRACTION) / WINDOW_READER_DIVISOR);
   expect(alone.ahead + alone.behind).toBeLessThanOrEqual(budget);
 });
 
@@ -196,21 +197,21 @@ test("gives up on a read that never yields and resets the connection", async () 
   expect(store.readerCount()).toBe(0);
 }, 30000);
 
-// Past MAX_WINDOW_READERS, registering another window would no longer let
-// them all fit the share together -- the thrash the fixed divisor exists to
-// prevent. A fifth reader must run unwindowed instead of costing the other
-// four their read-ahead.
-test("a fifth reader gets no window while four incumbents keep theirs", async () => {
+// The refusal this replaces left the newest reader -- after a seek, the actual
+// playhead -- running unprotected while abandoned duplicates held the windows.
+// In production that was playback pinned at byte 0 with two peers while four
+// duplicate requests at byte 0 owned every window. Windows overlap, so they do
+// not cost what that quota assumed: everyone gets one.
+test("a fifth reader still gets a window, and the incumbents keep theirs", async () => {
   setCapacity(1000 * CHUNK);
   const store = newStore();
   store.setWindow("r1", 0, 5);
   store.setWindow("r2", 10, 15);
   store.setWindow("r3", 20, 25);
   store.setWindow("r4", 30, 35);
-  const before = new Map(store.windows);
+  const before = new Map([...store.windows].map(([k, v]) => [k, { ...v }]));
 
-  // Mid-file, well outside the pinned head/tail, so this isn't classified as
-  // a probe -- it has to be the MAX_WINDOW_READERS check that refuses it.
+  // Mid-file, well outside the pinned head and tail, so it is not a probe.
   const body = Buffer.alloc(CHUNK, 9);
   const start = 50 * CHUNK;
   const torrent = {
@@ -226,14 +227,29 @@ test("a fifth reader gets no window while four incumbents keep theirs", async ()
   const { res } = sink();
 
   const done = streamWindowed(torrent, file, start, start + body.length - 1, res, null, {});
-  // The synchronous half of the first loop iteration -- including the fifth
-  // reader's own applyWindow() call -- has already run by this point, since
-  // `for await` on the fake read stream always suspends at its first tick.
-  expect(store.readerCount()).toBe(4);
+  // The synchronous half of the first loop iteration -- including this reader's
+  // own applyWindow() call -- has already run, since `for await` on the fake
+  // read stream always suspends at its first tick.
+  expect(store.readerCount()).toBe(5);
   for (const [token, w] of before) expect(store.windows.get(token)).toEqual(w);
 
   await done;
-  expect(store.readerCount()).toBe(4); // the fifth still never registered
+  expect(store.readerCount()).toBe(4); // its own window released on the way out
+  store.close();
+});
+
+// Overlapping windows are free, but disjoint ones are not: past a handful of
+// readers they have to share the budget or they stop fitting it together.
+test("sizes windows against the real count once there are many readers", () => {
+  setCapacity(4000 * CHUNK);
+  const store = newStore();
+  const few = windowFor(store, 95, 1);
+  const many = windowFor(store, 95, WINDOW_SHARE_FROM + 5);
+
+  expect(many.ahead).toBeLessThan(few.ahead);
+  const budget = shareFor(store) * WINDOW_FRACTION;
+  expect((many.ahead + many.behind) * (WINDOW_SHARE_FROM + 5)).toBeLessThanOrEqual(budget * 1.01);
+  store.close();
 });
 
 // The fixed-divisor guarantee has to hold for real buffers, not just algebra:
