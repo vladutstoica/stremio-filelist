@@ -71,13 +71,15 @@ class RingStore {
     // read-ahead it is about to need.
     this.windows = new Map(); // reader token -> { from, to }
 
-    // Pieces a read is in flight on, index -> readers waiting. Defence in
-    // depth, not the cure: the read that matters most -- the one WebTorrent
-    // issues after its bitfield said the piece is verified -- races eviction
-    // before it ever reaches get(), and nothing here can see that coming; the
-    // reader's retry is what covers it. What this does buy is that a piece
-    // stays in the map for as long as a read is outstanding on it, so a second
-    // reader landing on the same piece in the same tick still finds it.
+    // Pieces evict() must not touch, index -> holders. Two kinds of holder:
+    // a read in flight, so a second reader landing on the same piece in the
+    // same tick still finds it; and a put() whose callback has not run yet.
+    // The second is the one that matters. WebTorrent only sets the piece's
+    // bitfield bit inside that callback, so a piece dropped before it runs is
+    // never marked unverified -- the bit goes on for a piece we do not hold,
+    // and every read of it ends the stream with no bytes. Holding it until
+    // the callback has run hands it straight to the 'verified' read that
+    // callback triggers, which takes its own hold in get().
     this.pending = new Map();
 
     registry.add(this);
@@ -141,8 +143,20 @@ class RingStore {
     this.chunks.set(index, buf);
     this.bytes += buf.length;
 
+    // Held across the callback rather than released before it: see the
+    // pending map in the constructor. A burst of puts in one tick can leave us
+    // that many pieces over budget until the next put evicts; dropping the
+    // piece after release instead would throw away the frontier piece a live
+    // selection is about to read, and it would be fetched and dropped forever.
+    this.acquirePending(index);
     this.evict();
-    process.nextTick(cb, null);
+    process.nextTick(() => {
+      try {
+        cb(this.closed ? new Error("Storage is closed") : null);
+      } finally {
+        this.releasePending(index);
+      }
+    });
   }
 
   get(index, opts, cb) {
@@ -154,7 +168,14 @@ class RingStore {
     if (!buf) {
       // Evicted. We call torrent._markUnverified() on eviction so WebTorrent
       // knows it no longer has the piece and refetches it, which means we
-      // should rarely land here.
+      // should rarely land here. If WebTorrent still believes it has the
+      // piece, it is wrong, and it will never refetch a piece it thinks it
+      // holds: the reader would retry this miss until it gave up. Correct it
+      // before failing the read, so the retry finds the piece in the picker.
+      // Only then: forget() also tells every peer we dropped it, and a reader
+      // retrying an ordinary miss would repeat that on every attempt.
+      const t = this.torrent;
+      if (t && t.bitfield && t.bitfield.get(index)) this.forget(index);
       return process.nextTick(cb, new Error(`Chunk ${index} not in window`));
     }
 
@@ -185,8 +206,8 @@ class RingStore {
   // Drop pieces until we are back inside our share of the global budget.
   // Preference order: behind every window, then ahead of every window (a piece
   // sitting in a gap between two windows counts as ahead), then inside one,
-  // furthest from the reader first. A piece with a read in flight is never
-  // dropped, whichever bucket it would have fallen into.
+  // furthest from the reader first. A piece with a read or a put in flight is
+  // never dropped, whichever bucket it would have fallen into.
   evict() {
     const limit = shareFor(this);
     if (this.bytes <= limit) return;
@@ -210,12 +231,13 @@ class RingStore {
     const rest = [];
     for (const index of this.chunks.keys()) {
       if (this.isPinned(index)) continue;
-      // A read is already queued against this piece; dropping it now is exactly
-      // the race the pending map exists for. If skipping them all leaves us
-      // over the limit we stay over it until those reads finish -- a few pieces
-      // of overshoot for one tick, rather than pulling a buffer out from under
-      // a reader. The loop below is a single pass either way, so eviction
-      // always terminates having freed whatever it could.
+      // A read or a put is already in flight on this piece; dropping it now is
+      // exactly the race the pending map exists for. If skipping them all
+      // leaves us over the limit we stay over it until the next eviction -- a
+      // few pieces of overshoot for one tick, rather than pulling a buffer out
+      // from under a reader or losing one WebTorrent is about to call verified.
+      // The loop below is a single pass either way, so eviction always
+      // terminates having freed whatever it could.
       if (this.pending.has(index)) continue;
       if (index < low) behind.push(index);
       else if (index > high) ahead.push(index);
@@ -240,11 +262,14 @@ class RingStore {
     if (!buf) return;
     this.chunks.delete(index);
     this.bytes -= buf.length;
+    this.forget(index);
+  }
 
-    // Tell WebTorrent the piece is gone so it re-enters the picker and a
-    // backward seek refetches it instead of erroring. This only behaves if the
-    // torrent was added with `deselect: true` — otherwise _markUnverified
-    // re-selects the piece we just dropped and we download/evict forever.
+  // Tell WebTorrent the piece is gone so it re-enters the picker and a
+  // backward seek refetches it instead of erroring. This only behaves if the
+  // torrent was added with `deselect: true` — otherwise _markUnverified
+  // re-selects the piece we just dropped and we download/evict forever.
+  forget(index) {
     const t = this.torrent;
     if (!t || typeof t._markUnverified !== "function") return;
     try {

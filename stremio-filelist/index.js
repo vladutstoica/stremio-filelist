@@ -21,6 +21,14 @@ const {
   findEpisodeFile,
 } = require("./helpers");
 
+// Timestamp every log line. The add-on log is the only record of a stall, and
+// without times there is no telling a reader stuck for twenty seconds from one
+// stuck for an hour, or which request a line belongs to.
+for (const level of ["log", "error"]) {
+  const write = console[level].bind(console);
+  console[level] = (...args) => write(new Date().toISOString(), ...args);
+}
+
 // Load .env file if present
 try { require("dotenv").config(); } catch (_) {}
 
@@ -331,7 +339,15 @@ async function startTorrent(torrentBuffer) {
         // Watchdog: re-assert the piece window. Eviction is driven by piece
         // I/O, so a lost selection would mean no downloads, no I/O, no
         // cleanup, and a stall that never recovers on its own.
-        for (const reapply of entry.reapplyWindows) reapply();
+        // One reader throwing must not skip the rest, or take the stats line
+        // down with it.
+        for (const reapply of entry.reapplyWindows) {
+          try {
+            reapply();
+          } catch (e) {
+            console.error("Window reapply failed:", e.message);
+          }
+        }
 
         if (torrent.downloadSpeed > 10240 || torrent.uploadSpeed > 10240) {
           const peers = torrent.numPeers;
@@ -383,11 +399,17 @@ function validateApiKey(req, res, next) {
   res.status(403).json({ error: "Forbidden" });
 }
 
+// Numbers each stream request, so its "Streaming:" line, the reader's own
+// lines and its "Closed:" line can be matched up in a log where a player keeps
+// half a dozen requests open at once.
+let reqSeq = 0;
+
 // HTTP streaming endpoint (with optional API key prefix)
 const streamPath = API_KEY ? "/:apiKey/stream-video/:torrentId/:fileIdx?" : "/stream-video/:torrentId/:fileIdx?";
 app.get(streamPath, validateApiKey, async (req, res) => {
   const { torrentId } = req.params;
   const fileIdx = req.params.fileIdx ? parseInt(req.params.fileIdx, 10) : null;
+  const rid = ++reqSeq;
   // Set once onStreamStart has run, so any throw below still hands the count
   // back instead of stranding it. finish() is the only thing that decrements,
   // and only once, whether we got here by the socket closing, by finishing the
@@ -434,7 +456,10 @@ app.get(streamPath, validateApiKey, async (req, res) => {
       return;
     }
 
-    console.log(`Streaming: ${file.name} (${formatSize(fileSize)}) bytes ${start}-${end}`);
+    // Client-supplied: strip control characters and quotes so it cannot
+    // garble the log or break out of its field, and cap the length.
+    const ua = String(req.get("user-agent") || "").replace(/[\x00-\x1f\x7f"\\]/g, "?").slice(0, 120);
+    console.log(`Streaming: req-${rid} ${file.name} (${formatSize(fileSize)}) bytes ${start}-${end} ua="${ua}"`);
 
     if (range) {
       res.writeHead(206, {
@@ -453,9 +478,14 @@ app.get(streamPath, validateApiKey, async (req, res) => {
 
     res.on("close", finish);
 
-    await streamWindowed(torrent, file, start, end, res, activeTorrents.get(torrent.infoHash), {
+    const { served, gaveUp } = await streamWindowed(torrent, file, start, end, res, activeTorrents.get(torrent.infoHash), {
       readAheadPct: READ_AHEAD_PCT,
+      id: rid,
     });
+    // writableEnded rather than destroyed: a finished response is marked
+    // destroyed too, a tick after it closes.
+    const how = gaveUp ? "reset, gave up" : res.writableEnded ? "complete" : "client gone";
+    console.log(`Closed: req-${rid} ${file.name} served ${served ? formatSize(served) : "0 MB"} (${how})`);
     finish();
   } catch (e) {
     console.error("Stream error:", e.message);
