@@ -7,6 +7,8 @@ const DEFAULT_READ_AHEAD_PCT = 95;
 // player wait, but retrying forever holds the socket, the response object and
 // this reader's window open against a piece that may never arrive -- so give up
 // comfortably inside the player's own 10s stall watchdog and let it reconnect.
+// That holds for a read that ends empty; one that hangs instead is only noticed
+// after IDLE_MS, so that path gives up later, on its second idle restart.
 // Both bounds are real: the clock is the one that matters, the attempt count is
 // the backstop for a clock that jumps under load or in a test.
 const RETRY_DELAY_MS = 250;
@@ -14,6 +16,14 @@ const MAX_RETRY_DELAY_MS = 2000;
 const MAX_STALL_MS = 5000;
 const MAX_STALLS = 20;
 const STALL_LOG_EVERY = 8;
+// How long one read may sit without yielding a chunk before we tear it down and
+// read the same byte again. Not every stall ends the read: WebTorrent never
+// re-requests a piece evicted behind a live read's selection, and that read
+// just waits, forever, without the empty finish the retry loop below catches.
+// A chunk is a whole piece, and an 8 MB piece at 1.5 MB/s is a legitimate
+// five-second wait, so this sits at the player's own watchdog rather than at
+// MAX_STALL_MS. An idle restart counts as a stall, so two in a row give up.
+const IDLE_MS = 10000;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -117,7 +127,10 @@ async function streamWindowed(torrent, file, start, end, res, entry, opts = {}) 
   const readAheadPct = opts.readAheadPct || DEFAULT_READ_AHEAD_PCT;
   const store = ringStoreOf(torrent);
   const pieceLength = torrent.pieceLength;
-  const token = `reader-${nextToken++}`;
+  const idleMs = opts.idleMs || IDLE_MS;
+  // The caller's request id when it has one, so these lines can be matched to
+  // the request that produced them.
+  const token = opts.id !== undefined ? `req-${opts.id}` : `reader-${nextToken++}`;
   const probe = isProbeRange(store, file, pieceLength, start, end);
   let pos = start; // bytes handed to the socket, i.e. where the TV actually is
 
@@ -171,8 +184,18 @@ async function streamWindowed(torrent, file, start, end, res, entry, opts = {}) 
   };
   reportPos();
 
+  // A read blocked on a piece never notices the client leaving, and until the
+  // read returns this reader's window, position and torrent selection all stay
+  // live. One listener for the whole call, pointed at whichever read is current.
+  let current = null;
+  const onClose = () => {
+    if (current) current.destroy();
+  };
+  res.once("close", onClose);
+
   let stalls = 0;
   let stalledSince = 0;
+  let gaveUp = false;
   try {
     while (pos <= end && !res.writableEnded && !res.destroyed) {
       const win = applyWindow();
@@ -184,17 +207,38 @@ async function streamWindowed(torrent, file, start, end, res, entry, opts = {}) 
       const refreshAt = pos + Math.max(1, Math.floor(ahead / 2));
 
       const sub = file.createReadStream({ start: pos, end: subEnd });
+      current = sub;
       let advanced = false;
+      // Armed only while we wait on the read, never while we wait on the
+      // socket: a slow client is backpressure, not a stuck piece.
+      let idled = false;
+      let timer = null;
+      const arm = () => {
+        timer = setTimeout(() => {
+          idled = true;
+          sub.destroy();
+        }, idleMs);
+      };
       try {
+        arm();
         for await (const chunk of sub) {
+          clearTimeout(timer);
           if (!res.write(chunk)) await waitForDrain(res);
           if (res.writableEnded || res.destroyed) break;
           pos += chunk.length;
           reportPos();
           advanced = true;
           if (pos > subEnd || pos >= refreshAt) break;
+          arm();
         }
+      } catch (e) {
+        // Our own teardown surfaces as a premature close. Anything else is a
+        // real read error, and so is a close we did not cause.
+        if (!(idled && e.code === "ERR_STREAM_PREMATURE_CLOSE")) throw e;
+        console.log(`${token}: no data from ${file.name} at byte ${pos} for ${idleMs} ms, restarting the read`);
       } finally {
+        clearTimeout(timer);
+        current = null;
         sub.destroy();
       }
 
@@ -209,27 +253,30 @@ async function streamWindowed(torrent, file, start, end, res, entry, opts = {}) 
       // a finished stream. Breaking here would end the response with zero
       // bytes and a full Content-Length, which the player retries forever and
       // a proxy in front reports as a 5xx. Re-read the same position instead;
-      // the piece is back in the picker and will be refetched.
+      // the piece is back in the picker and will be refetched. A read torn
+      // down for idling lands here too, and a fresh one re-selects from pos.
       if (res.writableEnded || res.destroyed) break;
       stalls++;
       if (stalledSince === 0) stalledSince = Date.now();
       if (stalls % STALL_LOG_EVERY === 0) {
-        console.log(`Waiting on ${file.name} at byte ${pos} (${stalls} retries)`);
+        console.log(`${token}: Waiting on ${file.name} at byte ${pos} (${stalls} retries)`);
       }
       if (stalls >= MAX_STALLS || Date.now() - stalledSince >= MAX_STALL_MS) {
         // Out of budget. Ending the response here would claim a body that is
         // short of the Content-Length we promised is complete; reset the
         // connection instead. A player retries a reset quickly, where a proxy
         // in front turns a truncated body into a 5xx of its own.
-        console.log(`Giving up on ${file.name} at byte ${pos} after ${stalls} retries`);
+        console.log(`${token}: Giving up on ${file.name} at byte ${pos} after ${stalls} retries`);
+        gaveUp = true;
         res.destroy();
         break;
       }
       await sleep(Math.min(RETRY_DELAY_MS * stalls, MAX_RETRY_DELAY_MS));
     }
   } catch (e) {
-    if (!res.writableEnded && !res.destroyed) console.error("Stream read error:", e.message);
+    if (!res.writableEnded && !res.destroyed) console.error(`${token}: Stream read error:`, e.message);
   } finally {
+    res.off("close", onClose);
     if (entry && entry.reapplyWindows) entry.reapplyWindows.delete(applyWindow);
     if (entry && entry.positions) entry.positions.delete(token);
     if (store) store.clearWindow(token);
@@ -237,6 +284,9 @@ async function streamWindowed(torrent, file, start, end, res, entry, opts = {}) 
     // signal a clean finish, and the reset is the signal we meant to send.
     if (!res.writableEnded && !res.destroyed) res.end();
   }
+  // For the caller's log. A reset we sent looks the same on `res` as a client
+  // hanging up, and telling those two apart is the point of that line.
+  return { served: pos - start, gaveUp };
 }
 
 // Resolve a Range header against a known file size. A suffix range means the
@@ -283,4 +333,5 @@ module.exports = {
   WINDOW_FRACTION,
   WINDOW_READER_DIVISOR,
   WINDOW_SHARE_FROM,
+  IDLE_MS,
 };

@@ -27,7 +27,8 @@ function newStore() {
 // A torrent whose file reads are scripted: each entry in `reads` is the payload
 // the next createReadStream() yields, and an empty array means "yielded
 // nothing", which is how WebTorrent reports a failed store read -- it ends the
-// iterator without an error event.
+// iterator without an error event. A Readable is handed back as-is, so a test
+// can script a read that never yields at all.
 function fakeTorrent(reads) {
   const store = newStore();
   const torrent = {
@@ -49,6 +50,7 @@ function fakeTorrent(reads) {
     createReadStream({ start, end }) {
       file.calls.push({ start, end });
       const payload = reads.shift();
+      if (payload instanceof Readable) return payload;
       return Readable.from(payload === undefined ? [] : payload);
     },
   };
@@ -90,9 +92,10 @@ test("gives up once the client is gone rather than retrying into the void", asyn
   const { res } = sink();
   res.destroy();
 
-  await streamWindowed(torrent, file, 0, LENGTH - 1, res, null, {});
+  const { gaveUp } = await streamWindowed(torrent, file, 0, LENGTH - 1, res, null, {});
 
   expect(file.calls.length).toBe(0);
+  expect(gaveUp).toBe(false); // the client left; we did not reset it
 });
 
 test("registers one window per reader and drops it when the read ends", async () => {
@@ -186,9 +189,11 @@ test("gives up on a read that never yields and resets the connection", async () 
   const { res } = sink();
 
   const started = Date.now();
-  await streamWindowed(torrent, file, 0, LENGTH - 1, res, null, {});
+  const { gaveUp } = await streamWindowed(torrent, file, 0, LENGTH - 1, res, null, {});
 
   expect(Date.now() - started).toBeLessThan(15000);
+  // Reported as ours, so the caller's log does not blame the client for it.
+  expect(gaveUp).toBe(true);
   expect(file.calls.length).toBeGreaterThan(1);
   // Reset, not a clean end: the body is short of the Content-Length we promised
   // and ending it cleanly would claim otherwise.
@@ -379,3 +384,53 @@ test("flags pieces ahead of the read head critical, and clears them behind", asy
   expect(flagged.length).toBeLessThanOrEqual(Math.ceil((32 * 1024 * 1024) / CHUNK) + 1);
   store.close();
 });
+
+// A read blocked on a piece that never arrives used to hold its window, its
+// position and its torrent selection for as long as the process lived: nothing
+// woke the loop when the player hung up, so the stats line kept reporting a
+// playhead that was long gone and the stale window kept eviction under
+// pressure for every live reader.
+test("returns and clears its window when the client goes away while a read is blocked", async () => {
+  const hung = new Readable({ read() {} });
+  const { torrent, file, store } = fakeTorrent([hung]);
+  const { res } = sink();
+  const entry = { reapplyWindows: new Set(), positions: new Map() };
+
+  const done = streamWindowed(torrent, file, 10 * CHUNK, LENGTH - 1, res, entry, { idleMs: 60000 });
+  expect(store.readerCount()).toBe(1);
+  await new Promise((r) => setImmediate(r));
+  res.destroy();
+  await done;
+
+  expect(hung.destroyed).toBe(true);
+  expect(store.readerCount()).toBe(0);
+  expect(entry.positions.size).toBe(0);
+  expect(entry.reapplyWindows.size).toBe(0);
+}, 3000);
+
+// WebTorrent never re-requests a piece evicted behind a live read's selection,
+// so that read can wait forever without failing. Tearing it down and reading
+// the same byte again re-selects from where the player actually is -- and the
+// premature close that teardown causes is ours, not a read error.
+test("restarts a hung read at the same byte after the idle timeout", async () => {
+  const body = Buffer.alloc(2 * CHUNK, 5);
+  const hung = new Readable({ read() {} });
+  const { torrent, file } = fakeTorrent([hung, [body]]);
+  const { res, bytes } = sink();
+  const errors = jest.spyOn(console, "error").mockImplementation(() => {});
+  const start = 10 * CHUNK;
+
+  try {
+    const { served, gaveUp } = await streamWindowed(torrent, file, start, start + body.length - 1, res, null, { idleMs: 200 });
+
+    expect(hung.destroyed).toBe(true);
+    expect(file.calls.length).toBe(2);
+    expect(file.calls[1].start).toBe(start);
+    expect(bytes()).toBe(body.length);
+    expect(served).toBe(body.length);
+    expect(gaveUp).toBe(false);
+    expect(errors).not.toHaveBeenCalled();
+  } finally {
+    errors.mockRestore();
+  }
+}, 3000);
