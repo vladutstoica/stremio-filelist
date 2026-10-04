@@ -10,6 +10,7 @@ const {
   getEpisodeFromName,
   isSeasonPack,
   findEpisodeFile,
+  pickFile,
 } = require("./helpers");
 
 describe("formatSize", () => {
@@ -374,5 +375,35 @@ describe("qualityBadge", () => {
   test("falls back to the coarse tag when there is no resolution token", () => {
     expect(qualityBadge("Inception.2010.BDRip.x264.DD5.1-playSD")).toBe("SD");
     expect(qualityBadge("")).toBe("SD");
+  });
+});
+
+// The stream list advertises this file's name and size to subtitle add-ons and
+// the stream endpoint serves it, so both must pick the same one.
+describe("pickFile", () => {
+  const files = [
+    { name: "sample.mkv", length: 50 },
+    { name: "Film.2160p.mkv", length: 900 },
+    { name: "Film.nfo", length: 2 },
+  ];
+
+  test("returns the file a valid index names", () => {
+    expect(pickFile(files, 0)).toBe(files[0]);
+  });
+
+  test("falls back to the largest file without an index", () => {
+    expect(pickFile(files, null)).toBe(files[1]);
+  });
+
+  test("falls back to the largest file for an index that is not a real one", () => {
+    expect(pickFile(files, -1)).toBe(files[1]);
+    expect(pickFile(files, 3)).toBe(files[1]);
+    expect(pickFile(files, 1.5)).toBe(files[1]);
+    expect(pickFile(files, NaN)).toBe(files[1]);
+  });
+
+  test("returns null when there are no files", () => {
+    expect(pickFile([], 0)).toBeNull();
+    expect(pickFile(undefined, null)).toBeNull();
   });
 });

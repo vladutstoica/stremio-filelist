@@ -19,6 +19,7 @@ const {
   getEpisodeFromName,
   isSeasonPack,
   findEpisodeFile,
+  pickFile,
 } = require("./helpers");
 
 // Timestamp every log line. The add-on log is the only record of a stall, and
@@ -179,7 +180,8 @@ async function searchFileList(imdbId, categories) {
   }
 }
 
-function buildStream(item, torrentId, fileIdx, episodeFileName) {
+// `video` is the file the URL will serve, as { name, length } from the .torrent.
+function buildStream(item, torrentId, fileIdx, episodeFileName, video) {
   const raw = item.name || "";
   const quality = qualityBadge(raw);
   const size = formatSize(item.size);
@@ -226,8 +228,26 @@ function buildStream(item, torrentId, fileIdx, episodeFileName) {
     behaviorHints: {
       notWebReady: true,
       bingeGroup: `filelist-${item.id}`,
+      // Handed to subtitle add-ons so they can match subtitles to this exact
+      // release. Without them Stremio only has the IMDb id until its own
+      // streaming server has hashed the file mid-playback.
+      ...(video && { filename: video.name, videoSize: video.length }),
     },
   };
+}
+
+// The served file's name and size for a single-release torrent, or null if
+// the .torrent cannot be fetched or read -- the stream is still listed, just
+// without the subtitle hints.
+async function videoFileOf(torrentId) {
+  try {
+    await modulesReady;
+    const meta = await parseTorrent(await getTorrentBuffer(torrentId));
+    const file = pickFile(meta.files, null);
+    return file ? { name: file.name, length: file.length } : null;
+  } catch (_) {
+    return null;
+  }
 }
 
 // ---- Torrent streaming ----
@@ -426,20 +446,14 @@ app.get(streamPath, validateApiKey, async (req, res) => {
     const torrentBuffer = await getTorrentBuffer(torrentId);
     const torrent = await startTorrent(torrentBuffer);
 
-    let file;
-    // Both bounds, and integral: a negative or non-numeric index used to sail
-    // past `fileIdx < files.length` and leave `file` undefined, which threw on
-    // file.length one line after the stream had already been counted -- and the
-    // close handler that decrements is registered further down still. That leaks
-    // activeStreams permanently, so the idle timeout never arms and the torrent
-    // and its store stay resident for the life of the process. Fall back to the
-    // largest file rather than erroring: the index is a hint from a URL.
-    if (Number.isInteger(fileIdx) && fileIdx >= 0 && fileIdx < torrent.files.length) {
-      file = torrent.files[fileIdx];
-    } else {
-      // Pick largest file
-      file = torrent.files.reduce((a, b) => (a.length > b.length ? a : b));
-    }
+    // pickFile checks both bounds and that the index is an integer, and falls
+    // back to the largest file. That matters here: a bad index used to leave
+    // `file` undefined, which threw on file.length one line after the stream
+    // had already been counted -- and the close handler that decrements is
+    // registered further down still. That leaks activeStreams permanently, so
+    // the idle timeout never arms and the torrent and its store stay resident
+    // for the life of the process.
+    const file = pickFile(torrent.files, fileIdx);
 
     // No file.select() here: selecting the file downloads all of it. The
     // windowed reader below selects only the slice around the playhead.
@@ -478,13 +492,11 @@ app.get(streamPath, validateApiKey, async (req, res) => {
 
     res.on("close", finish);
 
-    const { served, gaveUp } = await streamWindowed(torrent, file, start, end, res, activeTorrents.get(torrent.infoHash), {
+    const { served, gaveUp, gone } = await streamWindowed(torrent, file, start, end, res, activeTorrents.get(torrent.infoHash), {
       readAheadPct: READ_AHEAD_PCT,
       id: rid,
     });
-    // writableEnded rather than destroyed: a finished response is marked
-    // destroyed too, a tick after it closes.
-    const how = gaveUp ? "reset, gave up" : res.writableEnded ? "complete" : "client gone";
+    const how = gaveUp ? "reset, gave up" : gone || !res.writableEnded ? "client gone" : "complete";
     console.log(`Closed: req-${rid} ${file.name} served ${served ? formatSize(served) : "0 MB"} (${how})`);
     finish();
   } catch (e) {
@@ -551,6 +563,9 @@ builder.defineStreamHandler(async ({ type, id }) => {
   const categories = type === "series" ? SERIES_CATEGORIES : MOVIE_CATEGORIES;
 
   const torrents = await searchFileList(imdbId, categories);
+  // One promise per listed stream, awaited together: each needs its .torrent
+  // fetched and read, and doing those one after another made the list wait on
+  // the sum of every download. Order is kept, so the ranking still holds.
   const streams = [];
 
   for (const torrent of torrents) {
@@ -562,8 +577,7 @@ builder.defineStreamHandler(async ({ type, id }) => {
 
       if (ep) {
         if (ep.season === season && ep.episode === episode) {
-          try { await getTorrentBuffer(torrentId); } catch (_) {}
-          streams.push(buildStream(torrent, torrentId));
+          streams.push(videoFileOf(torrentId).then((video) => buildStream(torrent, torrentId, null, null, video)));
         }
         continue;
       }
@@ -577,17 +591,17 @@ builder.defineStreamHandler(async ({ type, id }) => {
           torrentCache.set(torrentId, meta.buffer);
           const match = findEpisodeFile(meta.files, season, episode);
           if (match) {
-            streams.push(buildStream(torrent, torrentId, match.idx, match.name));
+            const f = meta.files[match.idx];
+            streams.push(buildStream(torrent, torrentId, match.idx, match.name, { name: match.name, length: f.length }));
           }
         }
       }
     } else {
-      try { await getTorrentBuffer(torrentId); } catch (_) {}
-      streams.push(buildStream(torrent, torrentId));
+      streams.push(videoFileOf(torrentId).then((video) => buildStream(torrent, torrentId, null, null, video)));
     }
   }
 
-  return { streams };
+  return { streams: await Promise.all(streams) };
 });
 
 const addonRouter = getRouter(builder.getInterface());

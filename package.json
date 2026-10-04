@@ -21,7 +21,8 @@
   },
   "devDependencies": {
     "jest": "^30.3.0",
-    "nodemon": "^3.0.0"
+    "nodemon": "^3.0.0",
+    "streamx": "2.22.1"
   },
   "engines": {
     "node": ">=22"

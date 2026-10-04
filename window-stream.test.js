@@ -1,4 +1,9 @@
-const { PassThrough, Readable } = require("stream");
+const { PassThrough } = require("stream");
+// WebTorrent builds file.createReadStream() on streamx, not on Node's streams,
+// and the two behave differently when destroyed mid-read: Node's throws a
+// premature close, streamx's never settles a read that is still waiting. The
+// fake has to be the real thing or these tests pass against code that hangs.
+const { Readable } = require("streamx");
 const {
   streamWindowed,
   isProbeRange,
@@ -28,7 +33,7 @@ function newStore() {
 // the next createReadStream() yields, and an empty array means "yielded
 // nothing", which is how WebTorrent reports a failed store read -- it ends the
 // iterator without an error event. A Readable is handed back as-is, so a test
-// can script a read that never yields at all.
+// can script a read that never yields at all -- see hungRead().
 function fakeTorrent(reads) {
   const store = newStore();
   const torrent = {
@@ -56,6 +61,26 @@ function fakeTorrent(reads) {
   };
   torrent.files.push(file);
   return { torrent, file, store };
+}
+
+// A read waiting on a piece that never arrives: WebTorrent's FileIterator
+// parks next() on a 'verified' event that does not come. `released` says
+// whether we let go of it: return() is what makes the real FileIterator drop
+// its torrent selection. streamx only flips `destroyed` once a pending read
+// settles, which this one never does.
+function hungRead() {
+  const never = {
+    released: false,
+    [Symbol.asyncIterator]() { return this; },
+    next: () => new Promise(() => {}),
+    return: async () => {
+      never.released = true;
+      return { done: true };
+    },
+  };
+  const stream = Readable.from(never);
+  stream.iterator = never;
+  return stream;
 }
 
 function sink() {
@@ -391,7 +416,7 @@ test("flags pieces ahead of the read head critical, and clears them behind", asy
 // playhead that was long gone and the stale window kept eviction under
 // pressure for every live reader.
 test("returns and clears its window when the client goes away while a read is blocked", async () => {
-  const hung = new Readable({ read() {} });
+  const hung = hungRead();
   const { torrent, file, store } = fakeTorrent([hung]);
   const { res } = sink();
   const entry = { reapplyWindows: new Set(), positions: new Map() };
@@ -400,9 +425,10 @@ test("returns and clears its window when the client goes away while a read is bl
   expect(store.readerCount()).toBe(1);
   await new Promise((r) => setImmediate(r));
   res.destroy();
-  await done;
+  const { gone } = await done;
 
-  expect(hung.destroyed).toBe(true);
+  expect(gone).toBe(true);
+  expect(hung.iterator.released).toBe(true);
   expect(store.readerCount()).toBe(0);
   expect(entry.positions.size).toBe(0);
   expect(entry.reapplyWindows.size).toBe(0);
@@ -414,7 +440,7 @@ test("returns and clears its window when the client goes away while a read is bl
 // premature close that teardown causes is ours, not a read error.
 test("restarts a hung read at the same byte after the idle timeout", async () => {
   const body = Buffer.alloc(2 * CHUNK, 5);
-  const hung = new Readable({ read() {} });
+  const hung = hungRead();
   const { torrent, file } = fakeTorrent([hung, [body]]);
   const { res, bytes } = sink();
   const errors = jest.spyOn(console, "error").mockImplementation(() => {});
@@ -423,7 +449,7 @@ test("restarts a hung read at the same byte after the idle timeout", async () =>
   try {
     const { served, gaveUp } = await streamWindowed(torrent, file, start, start + body.length - 1, res, null, { idleMs: 200 });
 
-    expect(hung.destroyed).toBe(true);
+    expect(hung.iterator.released).toBe(true);
     expect(file.calls.length).toBe(2);
     expect(file.calls[1].start).toBe(start);
     expect(bytes()).toBe(body.length);
