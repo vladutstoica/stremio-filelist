@@ -23,8 +23,8 @@ options:
   MAX_CONNS: 20
 schema:
   FILELIST_USER: str?
-  FILELIST_PASSKEY: str?
-  API_KEY: str?
+  FILELIST_PASSKEY: password?
+  API_KEY: password?
   BASE_URL: str?
   CACHE_SIZE_MB: int(64,3000)?
   READ_AHEAD_PCT: int(50,99)?
