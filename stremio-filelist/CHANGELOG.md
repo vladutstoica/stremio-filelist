@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.13.2
+
+Finishes the 1.13.1 fix for connections that got stuck. A connection waiting
+on a missing piece of the film still did not let go when the player hung up,
+or when it had waited ten seconds -- it stayed stuck until some other piece
+happened to arrive. When it did come unstuck it could also end the connection
+early while reporting it as complete. Both now let go straight away.
+
+Stremio is now told each stream's file name and size, so subtitle add-ons can
+pick subtitles for that exact release. The list of streams also appears
+faster, because the add-on now looks up all the torrent files at once instead
+of one at a time.
+
 ## 1.13.1
 
 Fixes playback freezing for good near the end of an episode while the add-on
