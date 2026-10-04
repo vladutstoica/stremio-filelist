@@ -187,9 +187,13 @@ async function streamWindowed(torrent, file, start, end, res, entry, opts = {}) 
   // A read blocked on a piece never notices the client leaving, and until the
   // read returns this reader's window, position and torrent selection all stay
   // live. One listener for the whole call, pointed at whichever read is current.
-  let current = null;
+  // `gone` is tracked here rather than read off `res`: the response is not
+  // always marked destroyed by the time we look.
+  let stopCurrent = null;
+  let gone = false;
   const onClose = () => {
-    if (current) current.destroy();
+    gone = true;
+    if (stopCurrent) stopCurrent("gone");
   };
   res.once("close", onClose);
 
@@ -197,7 +201,7 @@ async function streamWindowed(torrent, file, start, end, res, entry, opts = {}) 
   let stalledSince = 0;
   let gaveUp = false;
   try {
-    while (pos <= end && !res.writableEnded && !res.destroyed) {
+    while (pos <= end && !gone && !res.writableEnded && !res.destroyed) {
       const win = applyWindow();
       const ahead = win ? win.ahead : 64 * 1024 * 1024;
       const subEnd = Math.min(end, pos + ahead - 1);
@@ -207,22 +211,51 @@ async function streamWindowed(torrent, file, start, end, res, entry, opts = {}) 
       const refreshAt = pos + Math.max(1, Math.floor(ahead / 2));
 
       const sub = file.createReadStream({ start: pos, end: subEnd });
-      current = sub;
+      const reads = sub[Symbol.asyncIterator]();
       let advanced = false;
+      // We stop waiting on a read by abandoning it, never by destroying it and
+      // waiting for it to notice. WebTorrent's read streams are streamx, and
+      // streamx's destroy() "will wait for any pending operation to finish"
+      // (its README) -- a read still waiting on its piece waits on, until some
+      // other piece happens to arrive, if one ever does. `stop` settles the
+      // current wait with why we stopped: "idle" or "gone". Sticky, so a stop
+      // landing between two waits still ends the next one.
+      let stoppedWhy = null;
+      let wake = null;
+      const stop = (why) => {
+        stoppedWhy = stoppedWhy || why;
+        if (wake) wake(stoppedWhy);
+      };
+      stopCurrent = stop;
       // Armed only while we wait on the read, never while we wait on the
       // socket: a slow client is backpressure, not a stuck piece.
-      let idled = false;
       let timer = null;
       const arm = () => {
-        timer = setTimeout(() => {
-          idled = true;
-          sub.destroy();
-        }, idleMs);
+        timer = setTimeout(() => stop("idle"), idleMs);
       };
+      let idled = false;
       try {
         arm();
-        for await (const chunk of sub) {
+        for (;;) {
+          const next = reads.next();
+          // A read we stopped waiting on rejects once the stream is torn down
+          // below ("Stream was destroyed"); nobody is listening by then.
+          next.catch(() => {});
+          // A fresh promise per chunk rather than racing one shared "stopped"
+          // promise, which would collect a reaction for every chunk read.
+          const step = await new Promise((resolve, reject) => {
+            if (stoppedWhy) return resolve(stoppedWhy);
+            wake = resolve;
+            next.then(resolve, reject);
+          });
+          wake = null;
           clearTimeout(timer);
+          if (step === "idle" || step === "gone") {
+            idled = step === "idle";
+            break;
+          }
+          if (step.done) break;
+          const chunk = step.value;
           if (!res.write(chunk)) await waitForDrain(res);
           if (res.writableEnded || res.destroyed) break;
           pos += chunk.length;
@@ -231,15 +264,13 @@ async function streamWindowed(torrent, file, start, end, res, entry, opts = {}) 
           if (pos > subEnd || pos >= refreshAt) break;
           arm();
         }
-      } catch (e) {
-        // Our own teardown surfaces as a premature close. Anything else is a
-        // real read error, and so is a close we did not cause.
-        if (!(idled && e.code === "ERR_STREAM_PREMATURE_CLOSE")) throw e;
-        console.log(`${token}: no data from ${file.name} at byte ${pos} for ${idleMs} ms, restarting the read`);
       } finally {
         clearTimeout(timer);
-        current = null;
+        stopCurrent = null;
         sub.destroy();
+      }
+      if (idled) {
+        console.log(`${token}: no data from ${file.name} at byte ${pos} for ${idleMs} ms, restarting the read`);
       }
 
       if (advanced) {
@@ -255,7 +286,7 @@ async function streamWindowed(torrent, file, start, end, res, entry, opts = {}) 
       // a proxy in front reports as a 5xx. Re-read the same position instead;
       // the piece is back in the picker and will be refetched. A read torn
       // down for idling lands here too, and a fresh one re-selects from pos.
-      if (res.writableEnded || res.destroyed) break;
+      if (gone || res.writableEnded || res.destroyed) break;
       stalls++;
       if (stalledSince === 0) stalledSince = Date.now();
       if (stalls % STALL_LOG_EVERY === 0) {
@@ -274,7 +305,7 @@ async function streamWindowed(torrent, file, start, end, res, entry, opts = {}) 
       await sleep(Math.min(RETRY_DELAY_MS * stalls, MAX_RETRY_DELAY_MS));
     }
   } catch (e) {
-    if (!res.writableEnded && !res.destroyed) console.error(`${token}: Stream read error:`, e.message);
+    if (!gone && !res.writableEnded && !res.destroyed) console.error(`${token}: Stream read error:`, e.message);
   } finally {
     res.off("close", onClose);
     if (entry && entry.reapplyWindows) entry.reapplyWindows.delete(applyWindow);
@@ -282,11 +313,13 @@ async function streamWindowed(torrent, file, start, end, res, entry, opts = {}) 
     if (store) store.clearWindow(token);
     // Not after a destroy: ending a socket we just reset would either throw or
     // signal a clean finish, and the reset is the signal we meant to send.
-    if (!res.writableEnded && !res.destroyed) res.end();
+    // Nor after the client left: ending would mark the response complete for
+    // a body that was cut short.
+    if (!gone && !res.writableEnded && !res.destroyed) res.end();
   }
   // For the caller's log. A reset we sent looks the same on `res` as a client
   // hanging up, and telling those two apart is the point of that line.
-  return { served: pos - start, gaveUp };
+  return { served: pos - start, gaveUp, gone };
 }
 
 // Resolve a Range header against a known file size. A suffix range means the

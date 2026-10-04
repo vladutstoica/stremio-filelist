@@ -246,6 +246,19 @@ function findEpisodeFile(files, season, episode) {
   return null;
 }
 
+// The file a stream URL serves: the index it names when that is a real one,
+// otherwise the largest file. The index is a hint from a URL, so anything out
+// of range or non-integral falls back rather than erroring. Shared by the stream
+// list and the stream endpoint so the filename and size advertised to Stremio
+// are those of the file that is actually played.
+function pickFile(files, fileIdx) {
+  if (!files || !files.length) return null;
+  if (Number.isInteger(fileIdx) && fileIdx >= 0 && fileIdx < files.length) {
+    return files[fileIdx];
+  }
+  return files.reduce((a, b) => (a.length > b.length ? a : b));
+}
+
 module.exports = {
   parseRelease,
   qualityBadge,
@@ -261,4 +274,5 @@ module.exports = {
   getEpisodeFromName,
   isSeasonPack,
   findEpisodeFile,
+  pickFile,
 };
