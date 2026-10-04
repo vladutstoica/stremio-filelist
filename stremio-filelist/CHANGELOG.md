@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.13.3
+
+The FileList passkey and the API key are now hidden in the add-on's
+Configuration tab instead of being shown in plain text. Your saved values are
+kept; nothing else changes.
+
 ## 1.13.2
 
 Finishes the 1.13.1 fix for connections that got stuck. A connection waiting

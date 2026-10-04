@@ -122,7 +122,7 @@ async function getClient() {
 
 const manifest = {
   id: "org.filelist.stremio",
-  version: "1.13.2",
+  version: "1.13.3",
   name: "FileList",
   description: "Stream torrents from FileList.io",
   types: ["movie", "series"],
