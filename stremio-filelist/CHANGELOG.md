@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.13.1
+
+Fixes playback freezing for good near the end of an episode while the add-on
+kept downloading, with "Giving up on ... at byte ..." repeating in the log.
+
+With memory full, the add-on could throw away a piece of the film in the moment
+it was being stored. The download library still believed it had that piece, so
+it never fetched it again and playback could not get past it. A piece is now
+kept until the library has recorded it, and a piece that has gone missing anyway
+is downloaded again.
+
+Connections the player had already abandoned could also stay open for good,
+holding memory and making the "At" figure in the log show where an earlier
+episode had stopped. They now close as soon as the player leaves. A connection
+that gets nothing for ten seconds is restarted.
+
+Every log line now carries the time, a number for the connection it belongs to,
+which app made the request, and how much was sent when the connection closed.
+
 ## 1.13.0
 
 Fixes playback that would not start, or froze at the very beginning, while the
